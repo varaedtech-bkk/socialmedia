@@ -161,7 +161,7 @@ export const uploadMediaToPlatforms = async (
         
         // Option 2: Upload directly (requires file to be accessible via URL)
         // For now, we'll use the file path - but this requires the file to be publicly accessible
-        const baseUrl = process.env.BASE_URL || "http://localhost:9002";
+        const baseUrl = process.env.BASE_URL || "https://siamshoppinghub.com";
         const publicUrl = `${baseUrl}${mediaUrl.replace(/^\.\.\//, "")}`;
         
         const createMediaResponse = await axios.post(

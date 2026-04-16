@@ -25,7 +25,7 @@
    - Go to **App Dashboard** → **Products** → **Facebook Login** → **Settings**
    - Under **Valid OAuth Redirect URIs**, ensure your redirect URI is added:
      ```
-     http://localhost:9002/api/facebook/auth/callback
+     https://siamshoppinghub.com/api/facebook/auth/callback
      ```
    - For production, add your production URL too
 
@@ -118,7 +118,7 @@ scope=pages_show_list,pages_manage_posts,pages_read_engagement
 1. In **Facebook Login** → **Settings**
 2. Under **Valid OAuth Redirect URIs**, add:
    ```
-   http://localhost:9002/api/facebook/auth/callback
+   https://siamshoppinghub.com/api/facebook/auth/callback
    https://yourdomain.com/api/facebook/auth/callback
    ```
 
@@ -190,7 +190,7 @@ Make sure these are set correctly:
 # For Facebook Pages
 META_PAGE_APP_ID='523605123538703'
 META_PAGE_APP_SECRET='your_secret'
-META_REDIRECT_URI='http://localhost:9002/api/facebook/auth/callback'
+META_REDIRECT_URI='https://siamshoppinghub.com/api/facebook/auth/callback'
 ```
 
 ## Additional Resources
@@ -224,7 +224,7 @@ If you see **“API Setup with Facebook login”** or **“Set up Facebook login
 
 - In your app go to **Products → Instagram**.
 - Look for **“Set up Instagram business login”** (or similar) and complete that flow.
-- There you add **Valid OAuth Redirect URIs** (e.g. `http://localhost:9002/api/auth/instagram/callback`).
+- There you add **Valid OAuth Redirect URIs** (e.g. `https://siamshoppinghub.com/api/auth/instagram/callback`).
 - You do **not** need to complete “Set up Facebook login for business” or “Complete app review” for basic connect-and-post with test users.
 
 ### Prerequisites
@@ -246,7 +246,7 @@ In **Products → Instagram** you’ll see three steps. Here’s what each means
 |--------------|--------------------------|
 | **1. Generate access tokens** | Required. Add your Instagram account and assign yourself the **Instagram Tester** role in **Roles → Roles**. That lets you complete the “Connect Instagram” flow and get tokens. No need to “generate” tokens manually in the dashboard; our app gets them via OAuth when the user connects. |
 | **2. Configure webhooks** | **Optional** for posting. This app does not use Instagram webhooks for connect or publish. You can leave Callback URL empty, or add a placeholder (e.g. `https://yourdomain.com/webhooks/instagram`) if the UI requires something. Webhooks are only needed for real-time comments/messages. |
-| **3. Set up Instagram business login** | **Required.** This is where you add the **Valid OAuth Redirect URIs**. Click into this step and add exactly: `http://localhost:9002/api/auth/instagram/callback` (and your production URL when you deploy). Without this, you get “Invalid redirect_uri”. |
+| **3. Set up Instagram business login** | **Required.** This is where you add the **Valid OAuth Redirect URIs**. Click into this step and add exactly: `https://siamshoppinghub.com/api/auth/instagram/callback` (and your production URL when you deploy). Without this, you get “Invalid redirect_uri”. |
 
 After step 3, save, then try **Connect Instagram** again in the app.
 
@@ -268,7 +268,7 @@ After step 3, save, then try **Connect Instagram** again in the app.
    - These are different from your Facebook App credentials!
 
 4. **Configure OAuth Redirect URIs – localhost not allowed**
-   - **Instagram Business Login does not accept `http://localhost`.** If you add `http://localhost:9002/...`, Meta will show: *"Error saving redirect URIs. Verify your redirect URIs and try again."*
+   - **Instagram Business Login does not accept `http://localhost`.** If you add `https://siamshoppinghub.com/...`, Meta will show: *"Error saving redirect URIs. Verify your redirect URIs and try again."*
    - You must use a **public HTTPS URL**. Two options:
      - **Option A – Local dev with a tunnel (recommended):** Use [ngrok](https://ngrok.com/) (or similar). Run `ngrok http 9002`, then in Meta add the URL ngrok gives you, e.g. `https://abc123.ngrok-free.app/api/auth/instagram/callback`. Set the same value in `.env` as `INSTAGRAM_REDIRECT_URI` and restart your server. See **"Local development with ngrok"** below.
      - **Option B – Deployed app:** Add your real app URL, e.g. `https://yourdomain.com/api/auth/instagram/callback`, and set that in `.env`.
@@ -405,7 +405,7 @@ This app uses **WhatsApp Business API via Meta Business** to post status updates
    - Go to **Products** → **WhatsApp** → **Configuration**
    - Add redirect URI:
      ```
-     http://localhost:9002/api/auth/whatsapp/callback
+     https://siamshoppinghub.com/api/auth/whatsapp/callback
      ```
 
 4. **Request Permissions**
@@ -428,7 +428,7 @@ Add to your `.env` file:
 # WhatsApp Business API (can use same as Facebook Page app)
 WHATSAPP_APP_ID='your_facebook_app_id'  # Same as META_PAGE_APP_ID
 WHATSAPP_APP_SECRET='your_facebook_app_secret'  # Same as META_PAGE_APP_SECRET
-WHATSAPP_REDIRECT_URI='http://localhost:9002/api/auth/whatsapp/callback'
+WHATSAPP_REDIRECT_URI='https://siamshoppinghub.com/api/auth/whatsapp/callback'
 ```
 
 #### 5. WhatsApp Status Posting Requirements

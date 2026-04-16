@@ -62,7 +62,7 @@ Content-Type: application/json
 **Example:**
 ```bash
 # Disable subscriptions
-curl -X POST http://localhost:9002/api/admin/features/subscriptions_enabled \
+curl -X POST https://siamshoppinghub.com/api/admin/features/subscriptions_enabled \
   -H "Content-Type: application/json" \
   -H "Cookie: connect.sid=..." \
   -d '{"value": false}'
@@ -136,13 +136,13 @@ if (!req.user!.isSuperAdmin) {
 ### Disable Subscriptions Temporarily
 ```bash
 # Login first
-curl -X POST http://localhost:9002/api/login \
+curl -X POST https://siamshoppinghub.com/api/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"password"}' \
   -c cookies.txt
 
 # Disable subscriptions
-curl -X POST http://localhost:9002/api/admin/features/subscriptions_enabled \
+curl -X POST https://siamshoppinghub.com/api/admin/features/subscriptions_enabled \
   -H "Content-Type: application/json" \
   -b cookies.txt \
   -d '{"value": false}'
@@ -150,7 +150,7 @@ curl -X POST http://localhost:9002/api/admin/features/subscriptions_enabled \
 
 ### Re-enable Subscriptions
 ```bash
-curl -X POST http://localhost:9002/api/admin/features/subscriptions_enabled \
+curl -X POST https://siamshoppinghub.com/api/admin/features/subscriptions_enabled \
   -H "Content-Type: application/json" \
   -b cookies.txt \
   -d '{"value": true}'

@@ -121,7 +121,7 @@ export const publishPost = async (postId: number) => {
 
           // Get the first media URL (Instagram single post)
           const mediaUrl = mediaUrls[0];
-          const baseUrl = process.env.BASE_URL || "http://localhost:9002";
+          const baseUrl = process.env.BASE_URL || "https://siamshoppinghub.com";
           
           // Instagram requires publicly accessible URLs
           // For local development, this won't work - need a public URL or CDN
@@ -378,7 +378,7 @@ export const publishPost = async (postId: number) => {
 
             // Get the first media URL (WhatsApp Status supports single media)
             const mediaUrl = mediaUrls[0];
-            const baseUrl = process.env.BASE_URL || "http://localhost:9002";
+            const baseUrl = process.env.BASE_URL || "https://siamshoppinghub.com";
             const publicMediaUrl = mediaUrl.startsWith("http") 
               ? mediaUrl 
               : `${baseUrl}${mediaUrl}`;
