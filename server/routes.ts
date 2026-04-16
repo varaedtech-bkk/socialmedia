@@ -23,6 +23,8 @@ import {
   isFeatureEnabled, 
   FEATURE_KEYS
 } from "./feature-config";
+import { getN8nIntegrationStatus, triggerN8nWorkflow } from "./n8n";
+import { registerTelegramRoutes } from "./routes-telegram";
 
 /** Log errors with context for debugging; captures message, stack, and axios response when present */
 function logError(context: string, error: unknown, extra?: Record<string, unknown>): void {
@@ -56,6 +58,7 @@ const upload = multer({
 
 export async function registerRoutes(app: Express): Promise<Server> {
   setupAuth(app);
+  registerTelegramRoutes(app);
   // Reinitialize scheduled posts on server startup
   await initializeScheduledPosts();
   // app.use(cors({
@@ -804,6 +807,90 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   );
 
+  app.get("/api/integrations/n8n/status", (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    return res.json(getN8nIntegrationStatus());
+  });
+
+  app.post("/api/integrations/n8n/test", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    try {
+      await triggerN8nWorkflow({
+        event: "integration_test",
+        user: {
+          id: req.user!.id,
+          username: req.user!.username,
+          email: req.user!.email,
+        },
+        meta: {
+          source: "socialmedia-app",
+          timestamp: new Date().toISOString(),
+        },
+      });
+      return res.json({ ok: true, message: "n8n test webhook sent" });
+    } catch (error) {
+      logError("n8n test webhook", error, { userId: req.user?.id });
+      return res.status(400).json({ ok: false, error: (error as Error).message });
+    }
+  });
+
+  app.post("/api/ai/generate-post", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+
+    const schema = z.object({
+      prompt: z.string().min(5).max(1000),
+      platforms: z.array(z.string()).optional().default([]),
+      tone: z.string().optional().default("professional"),
+    });
+
+    try {
+      const { prompt, platforms, tone } = schema.parse(req.body);
+      const apiKey = process.env.OPENROUTER_API_KEY;
+      if (!apiKey) {
+        return res.status(400).json({
+          error: "OPENROUTER_API_KEY is not configured",
+        });
+      }
+
+      const model = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
+      const platformText = platforms.length > 0 ? platforms.join(", ") : "general social";
+      const systemPrompt =
+        "You are a social media copywriter. Return only a concise post draft text with no markdown fences.";
+
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: `Create a ${tone} social media post for ${platformText}. Topic: ${prompt}. Keep under 250 words.`,
+            },
+          ],
+          temperature: 0.7,
+        }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error?.message || "AI generation failed");
+      }
+
+      const content = result?.choices?.[0]?.message?.content?.trim();
+      if (!content) throw new Error("AI returned empty content");
+
+      return res.json({ content });
+    } catch (error) {
+      logError("AI post generation", error, { userId: req.user?.id });
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
   app.post("/api/posts",checkPostQuota, // Add this middleware
     upload.array("media"), 
     async (req, res) => {
@@ -871,6 +958,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else {
         // If the post is not scheduled, publish it immediately
         await publishPost(post.id);
+      }
+
+      try {
+        await triggerN8nWorkflow({
+          event: utcScheduledTime ? "post_created" : "post_published",
+          post,
+          user: {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+          },
+          meta: {
+            source: "socialmedia-app",
+            scheduled: Boolean(utcScheduledTime),
+            submittedTimezone: timezone,
+          },
+        });
+      } catch (error) {
+        // Do not fail primary post flow if n8n is down/misconfigured.
+        logError("n8n webhook dispatch", error, { userId: user.id, postId: post.id });
       }
   
       res.json(post);

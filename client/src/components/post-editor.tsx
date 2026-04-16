@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { format } from "date-fns";
-import { CalendarIcon, Loader2, ImageIcon, Video, X, File, Link2, AlertCircle } from "lucide-react";
+import { CalendarIcon, Loader2, ImageIcon, Video, X, File, Link2, AlertCircle, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -43,6 +43,7 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
   );
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [dialogPlatforms, setDialogPlatforms] = useState<InsertPost["platforms"]>([]);
+  const [aiPrompt, setAiPrompt] = useState("");
   const { user } = useAuth();
   const { toast } = useToast();
 
@@ -140,6 +141,37 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
           variant: "destructive",
         });
       }
+    },
+  });
+
+  const generateWithAi = useMutation({
+    mutationFn: async () => {
+      if (!aiPrompt.trim()) throw new Error("Enter a prompt for AI generation");
+      const selectedPlatforms = form.watch("platforms");
+      const res = await apiRequest("POST", "/api/ai/generate-post", {
+        prompt: aiPrompt,
+        platforms: selectedPlatforms,
+        tone: "professional",
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to generate AI content");
+      }
+      return res.json() as Promise<{ content: string }>;
+    },
+    onSuccess: (data) => {
+      form.setValue("content", data.content, { shouldValidate: true, shouldDirty: true });
+      toast({
+        title: "AI draft ready",
+        description: "Post content generated. Review and edit before publishing.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "AI generation failed",
+        description: error.message,
+        variant: "destructive",
+      });
     },
   });
 
@@ -308,6 +340,36 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
       onSubmit={form.handleSubmit(handleFormSubmit)}
       className="space-y-4"
     >
+      <div className="grid gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Textarea
+            placeholder="Ask AI to write your post. Example: Launch announcement for our new product with friendly tone."
+            className="min-h-[72px] resize-none"
+            value={aiPrompt}
+            onChange={(e) => setAiPrompt(e.target.value)}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            className="sm:w-[220px]"
+            disabled={generateWithAi.isPending}
+            onClick={() => generateWithAi.mutate()}
+          >
+            {generateWithAi.isPending ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Generating...
+              </>
+            ) : (
+              <>
+                <Sparkles className="mr-2 h-4 w-4" />
+                Generate with AI
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+
       <Textarea
         placeholder="What's on your mind?"
         className="min-h-[150px] resize-none"
