@@ -1,0 +1,87 @@
+@import url("https://fonts.googleapis.com/css?family=Source+Sans+Pro&display=swap");
+
+.clock {
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  /* position: absolute; */
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 2px 30px rgba(0, 0, 0, 0.2);
+  font-family: "Source Sans Pro", sans-serif;
+  background: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.clock::after {
+  content: "";
+  width: 12px;
+  height: 12px;
+  background: #aaa;
+  border-radius: 50%;
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border: 2px solid #fff;
+}
+
+/* Clock Hands */
+.hour_hand,
+.min_hand,
+.sec_hand {
+  position: absolute;
+  transform-origin: bottom;
+  transition: transform 0.5s linear;
+}
+
+.hour_hand {
+  width: 6px;
+  height: 60px;
+  background: #222;
+  top: 30%;
+  left: 50%;
+}
+
+.min_hand {
+  width: 4px;
+  height: 80px;
+  background: #444;
+  top: 22%;
+  left: 50%;
+}
+
+.sec_hand {
+  width: 2px;
+  height: 100px;
+  background: red;
+  top: 16%;
+  left: 50%;
+}
+
+/* Clock Numbers Positioned Using Circular Math */
+.clock span {
+  position: absolute;
+  font-weight: 700;
+  font-size: 18px;
+  transform: translate(-50%, -50%);
+}
+
+/* Using nth-child to dynamically place the numbers */
+.clock span:nth-child(1) { top: 5%; left: 50%; }  /* 12 */
+.clock span:nth-child(2) { top: 15%; left: 80%; } /* 1 */
+.clock span:nth-child(3) { top: 30%; left: 90%; } /* 2 */
+.clock span:nth-child(4) { top: 50%; left: 95%; } /* 3 */
+.clock span:nth-child(5) { top: 70%; left: 90%; } /* 4 */
+.clock span:nth-child(6) { top: 85%; left: 80%; } /* 5 */
+.clock span:nth-child(7) { bottom: 5%; left: 50%; } /* 6 */
+.clock span:nth-child(8) { top: 85%; left: 20%; } /* 7 */
+.clock span:nth-child(9) { top: 70%; left: 10%; } /* 8 */
+.clock span:nth-child(10) { top: 50%; left: 5%; } /* 9 */
+.clock span:nth-child(11) { top: 30%; left: 10%; } /* 10 */
+.clock span:nth-child(12) { top: 15%; left: 20%; } /* 11 */
