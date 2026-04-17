@@ -1,9 +1,47 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+function normalizeApiErrorMessage(status: number, rawText: string, contentType: string): string {
+  const text = (rawText || "").trim();
+  const looksLikeHtml =
+    text.toLowerCase().includes("<!doctype") || text.toLowerCase().includes("<html");
+
+  if (status === 401) return "Session expired. Please log in again.";
+  if (status === 403) return "You do not have permission to perform this action.";
+  if (status === 404) return "Requested resource was not found.";
+  if (status === 413) return "Upload is too large. Please choose a smaller file.";
+  if (status === 429) return "Too many requests. Please wait and try again.";
+  if (status >= 500) return "Server error. Please try again in a moment.";
+
+  if (contentType.includes("application/json")) {
+    try {
+      const parsed = JSON.parse(text);
+      return parsed?.error || parsed?.message || "Request failed. Please try again.";
+    } catch {
+      return "Request failed. Please try again.";
+    }
+  }
+
+  if (looksLikeHtml) {
+    return `Server returned an unexpected response (${status}). Please try again.`;
+  }
+
+  return text.slice(0, 180) || "Request failed. Please try again.";
+}
+
+export async function getErrorMessageFromResponse(
+  res: Response,
+  fallback = "Request failed. Please try again.",
+): Promise<string> {
+  const contentType = res.headers.get("content-type") || "";
+  const rawText = await res.text().catch(() => "");
+  const message = normalizeApiErrorMessage(res.status, rawText, contentType);
+  return message || fallback;
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    const message = await getErrorMessageFromResponse(res);
+    throw new Error(message);
   }
 }
 
@@ -43,9 +81,9 @@ export const getQueryFn = <T>(options: {
 
       // For other cases, throw if not ok (including 401 when behavior is "throw")
       if (!res.ok) {
-        const text = (await res.text()) || res.statusText;
+        const message = await getErrorMessageFromResponse(res);
         // Create a silent error for 401s that won't be logged
-        const error = new Error(`${res.status}: ${text}`);
+        const error = new Error(message);
         if (res.status === 401) {
           // Mark 401 errors so they can be filtered out
           (error as any).is401 = true;

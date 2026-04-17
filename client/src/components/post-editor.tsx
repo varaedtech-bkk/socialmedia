@@ -3,7 +3,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertPostSchema, InsertPost } from "@shared/schema";
 import { useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, getErrorMessageFromResponse, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -102,9 +102,7 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
       });
 
       if (!res.ok) {
-        const error = await res.json();
-        console.error("Backend error response:", error);
-        throw new Error(error.error || "Failed to create post");
+        throw new Error(await getErrorMessageFromResponse(res, "Failed to create post"));
       }
 
       const responseData = await res.json();

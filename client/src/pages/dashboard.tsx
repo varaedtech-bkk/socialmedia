@@ -132,10 +132,6 @@ export default function Dashboard() {
   const deletePost = useMutation({
     mutationFn: async (postId: number) => {
       const res = await apiRequest("DELETE", `/api/posts/${postId}`);
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.message || "Failed to delete post");
-      }
       return res.json();
     },
     onMutate: async (postId) => {
