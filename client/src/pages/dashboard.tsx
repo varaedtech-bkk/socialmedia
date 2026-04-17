@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Calendar, BarChart2, Home, LogOut, Menu, Trash, CreditCard, Settings } from "lucide-react";
 import { Link } from "wouter";
 import SocialConnect from "@/components/social-connect";
+import ConnectedAccounts from "@/components/connected-accounts";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -362,6 +363,7 @@ export default function Dashboard() {
 
               <div className="space-y-6">
                 <SocialConnect />
+                <ConnectedAccounts />
 
                 <Card>
                   <CardHeader>

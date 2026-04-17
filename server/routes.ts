@@ -25,6 +25,7 @@ import {
 } from "./feature-config";
 import { getN8nIntegrationStatus, triggerN8nWorkflow } from "./n8n";
 import { registerTelegramRoutes } from "./routes-telegram";
+import { verifyTelegramBindToken } from "./telegram-link";
 
 /** Log errors with context for debugging; captures message, stack, and axios response when present */
 function logError(context: string, error: unknown, extra?: Record<string, unknown>): void {
@@ -244,6 +245,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         req.user!.id,
         pageAccessToken,
         pageId
+      );
+      const pageName = (page as { name?: string }).name || `Page ${pageId}`;
+      await storage.upsertFacebookPageSocialAccount(
+        req.user!.id,
+        String(pageId),
+        pageAccessToken,
+        pageName
       );
       res.redirect(`/?facebook_page_connected=true`);
     } catch (error) {
@@ -887,6 +895,59 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.json({ content });
     } catch (error) {
       logError("AI post generation", error, { userId: req.user?.id });
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post("/api/telegram/attach", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    try {
+      const body = z.object({ token: z.string().min(8) }).parse(req.body);
+      const verified = verifyTelegramBindToken(body.token);
+      if (!verified) {
+        return res.status(400).json({ error: "Invalid or expired Telegram link" });
+      }
+      await storage.setUserTelegramChatId(req.user!.id, verified.telegramChatId);
+      return res.json({ ok: true, telegramChatId: verified.telegramChatId });
+    } catch (error) {
+      logError("Telegram attach", error, { userId: req.user?.id });
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  app.get("/api/social-accounts", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    try {
+      const accounts = await storage.listSocialAccounts(req.user!.id);
+      return res.json(accounts);
+    } catch (error) {
+      logError("List social accounts", error, { userId: req.user?.id });
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  app.delete("/api/social-accounts/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: "Invalid id" });
+      await storage.deleteSocialAccount(req.user!.id, id);
+      return res.json({ ok: true });
+    } catch (error) {
+      logError("Delete social account", error, { userId: req.user?.id });
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post("/api/social-accounts/:id/default", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: "Invalid id" });
+      await storage.setDefaultSocialAccount(req.user!.id, id);
+      return res.json({ ok: true });
+    } catch (error) {
+      logError("Set default social account", error, { userId: req.user?.id });
       return res.status(400).json({ error: (error as Error).message });
     }
   });

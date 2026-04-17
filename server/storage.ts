@@ -1,4 +1,4 @@
-import { User, InsertUser, Post, InsertPost } from "@shared/schema";
+import { User, InsertUser, Post, InsertPost, SocialAccount } from "@shared/schema";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 
@@ -129,6 +129,21 @@ export interface IStorage {
 
   getAllUsers(): Promise<User[]>;
 
+  getUserByTelegramChatId(telegramChatId: string): Promise<User | undefined>;
+  setUserTelegramChatId(userId: number, telegramChatId: string | null): Promise<User>;
+  listSocialAccounts(userId: number): Promise<SocialAccount[]>;
+  upsertFacebookPageSocialAccount(
+    userId: number,
+    pageId: string,
+    accessToken: string,
+    displayName: string
+  ): Promise<void>;
+  deleteSocialAccount(userId: number, accountId: number): Promise<void>;
+  setDefaultSocialAccount(userId: number, accountId: number): Promise<void>;
+  getEffectiveFacebookPageCredentials(
+    userId: number
+  ): Promise<{ pageToken: string; pageId: string } | null>;
+
   // Post-related methods
   createPost(userId: number, post: InsertPost): Promise<Post>;
   getUserPosts(
@@ -156,6 +171,8 @@ export class MemStorage implements IStorage {
   private subscriptions: Map<number, Subscription>;
   private subscriptionIdCounter: number;
   private postCounts: Map<string, number>;
+  private socialAccounts: SocialAccount[] = [];
+  private socialAccountIdCounter = 1;
   sessionStore: session.Store;
 
   constructor() {
@@ -164,6 +181,8 @@ export class MemStorage implements IStorage {
     this.subscriptions = new Map();
     this.subscriptionIdCounter = 1;
     this.postCounts = new Map();
+    this.socialAccounts = [];
+    this.socialAccountIdCounter = 1;
     this.currentUserId = 1;
     this.currentPostId = 1;
     this.sessionStore = new MemoryStore({
@@ -275,6 +294,7 @@ export class MemStorage implements IStorage {
       whatsappBusinessAccountId: null,
       whatsappPhoneNumberId: null,
       whatsappUserProfile: null,
+      telegramChatId: null,
       stripeCustomerId: null,
       isActive: true,
       isDeleted: false,
@@ -460,6 +480,103 @@ export class MemStorage implements IStorage {
 
   async getAllUsers(): Promise<User[]> {
     return Array.from(this.users.values());
+  }
+
+  async getUserByTelegramChatId(telegramChatId: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find(
+      (u) => u.telegramChatId && String(u.telegramChatId) === String(telegramChatId)
+    );
+  }
+
+  async setUserTelegramChatId(userId: number, telegramChatId: string | null): Promise<User> {
+    const user = await this.validateUser(userId);
+    if (telegramChatId) {
+      for (const [id, u] of Array.from(this.users.entries())) {
+        if (u.telegramChatId === telegramChatId && id !== userId) {
+          this.users.set(id, { ...u, telegramChatId: null });
+        }
+      }
+    }
+    const updated = { ...user, telegramChatId, updatedAt: new Date() };
+    this.users.set(userId, updated);
+    return updated;
+  }
+
+  async listSocialAccounts(userId: number): Promise<SocialAccount[]> {
+    return this.socialAccounts.filter((a) => a.userId === userId);
+  }
+
+  async upsertFacebookPageSocialAccount(
+    userId: number,
+    pageId: string,
+    accessToken: string,
+    displayName: string
+  ): Promise<void> {
+    const platform = "facebook-page";
+    const now = new Date();
+    for (const a of this.socialAccounts) {
+      if (a.userId === userId && a.platform === platform) {
+        a.isDefault = false;
+        a.updatedAt = now;
+      }
+    }
+    const existing = this.socialAccounts.find(
+      (a) => a.userId === userId && a.platform === platform && a.externalId === pageId
+    );
+    if (existing) {
+      existing.accessToken = accessToken;
+      existing.displayName = displayName;
+      existing.isDefault = true;
+      existing.updatedAt = now;
+      return;
+    }
+    this.socialAccounts.push({
+      id: this.socialAccountIdCounter++,
+      userId,
+      platform,
+      displayName,
+      externalId: pageId,
+      accessToken,
+      refreshToken: null,
+      metadata: {},
+      isDefault: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async deleteSocialAccount(userId: number, accountId: number): Promise<void> {
+    const idx = this.socialAccounts.findIndex((a) => a.id === accountId && a.userId === userId);
+    if (idx === -1) throw new Error("Social account not found");
+    this.socialAccounts.splice(idx, 1);
+  }
+
+  async setDefaultSocialAccount(userId: number, accountId: number): Promise<void> {
+    const acc = this.socialAccounts.find((a) => a.id === accountId && a.userId === userId);
+    if (!acc) throw new Error("Social account not found");
+    const now = new Date();
+    this.socialAccounts.forEach((a) => {
+      if (a.userId === userId && a.platform === acc.platform) {
+        a.isDefault = a.id === accountId;
+        a.updatedAt = now;
+      }
+    });
+  }
+
+  async getEffectiveFacebookPageCredentials(
+    userId: number
+  ): Promise<{ pageToken: string; pageId: string } | null> {
+    const def = this.socialAccounts.find(
+      (a) => a.userId === userId && a.platform === "facebook-page" && a.isDefault
+    );
+    if (def?.accessToken && def.externalId) {
+      return { pageToken: def.accessToken, pageId: def.externalId };
+    }
+    const user = await this.getUser(userId);
+    if (user?.facebookPageToken && user.facebookPageId) {
+      return { pageToken: user.facebookPageToken, pageId: user.facebookPageId };
+    }
+    return null;
   }
 
   async deleteUser(userId: number): Promise<User> {

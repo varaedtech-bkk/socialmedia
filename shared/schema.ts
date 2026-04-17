@@ -48,7 +48,9 @@ export const users = pgTable(
     whatsappBusinessAccountId: text("whatsapp_business_account_id").default(sql`null`),
     whatsappPhoneNumberId: text("whatsapp_phone_number_id").default(sql`null`),
     whatsappUserProfile: json("whatsapp_user_profile").default(sql`null`),
-    
+    /** When set, Telegram bot commands map to this user after /connect + web login */
+    telegramChatId: text("telegram_chat_id").default(sql`null`),
+
     isActive: boolean("is_active").default(true),
     isDeleted: boolean("is_deleted").default(false),  // New soft delete field
     deletedAt: timestamp("deleted_at").default(sql`null`),  // New soft delete field
@@ -62,6 +64,34 @@ export const users = pgTable(
     usernameIdx: index("username_idx").on(table.username),
     emailIdx: index("email_idx").on(table.email),
     isActiveIdx: index("is_active_idx").on(table.isActive),  // New index
+  })
+);
+
+/** Per-user connected social accounts (multiple Facebook pages, etc.) */
+export const socialAccounts = pgTable(
+  "social_accounts",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    platform: text("platform").notNull(),
+    displayName: text("display_name").notNull().default(""),
+    externalId: text("external_id").notNull(),
+    accessToken: text("access_token").notNull(),
+    refreshToken: text("refresh_token").default(sql`null`),
+    metadata: json("metadata").$type<Record<string, unknown>>().default(sql`'{}'::json`),
+    isDefault: boolean("is_default").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    userPlatformIdx: index("social_accounts_user_platform_idx").on(table.userId, table.platform),
+    userExternalIdx: index("social_accounts_user_external_idx").on(
+      table.userId,
+      table.platform,
+      table.externalId
+    ),
   })
 );
 
@@ -285,3 +315,4 @@ export type SubscriptionStatus = z.infer<typeof subscriptionStatusEnum>;
 export type RateLimit = typeof platformRateLimits.$inferSelect;
 export type InsertRateLimit = z.infer<typeof insertRateLimitSchema>;
 export type AppSetting = typeof appSettings.$inferSelect;
+export type SocialAccount = typeof socialAccounts.$inferSelect;

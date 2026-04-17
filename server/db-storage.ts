@@ -1,7 +1,7 @@
-import { eq, and, desc, sql, gte, lte, or } from "drizzle-orm";
+import { eq, and, desc, sql, gte, lte, or, ne } from "drizzle-orm";
 import { db, schema } from "./db";
 import { IStorage, Subscription, InsertSubscription } from "./storage";
-import { User, InsertUser, Post, InsertPost } from "@shared/schema";
+import { User, InsertUser, Post, InsertPost, SocialAccount } from "@shared/schema";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 import dotenv from "dotenv";
@@ -456,6 +456,140 @@ export class DbStorage implements IStorage {
       .select()
       .from(schema.users)
       .where(eq(schema.users.isDeleted, false));
+  }
+
+  async getUserByTelegramChatId(telegramChatId: string): Promise<User | undefined> {
+    const result = await db
+      .select()
+      .from(schema.users)
+      .where(and(eq(schema.users.telegramChatId, telegramChatId), eq(schema.users.isDeleted, false)))
+      .limit(1);
+    return result[0];
+  }
+
+  async setUserTelegramChatId(userId: number, telegramChatId: string | null): Promise<User> {
+    if (telegramChatId) {
+      await db
+        .update(schema.users)
+        .set({ telegramChatId: null, updatedAt: new Date() })
+        .where(and(eq(schema.users.telegramChatId, telegramChatId), ne(schema.users.id, userId)));
+    }
+    const result = await db
+      .update(schema.users)
+      .set({ telegramChatId, updatedAt: new Date() })
+      .where(eq(schema.users.id, userId))
+      .returning();
+    if (result.length === 0) throw new Error("User not found");
+    return result[0];
+  }
+
+  async listSocialAccounts(userId: number): Promise<SocialAccount[]> {
+    return await db
+      .select()
+      .from(schema.socialAccounts)
+      .where(eq(schema.socialAccounts.userId, userId))
+      .orderBy(desc(schema.socialAccounts.updatedAt));
+  }
+
+  async upsertFacebookPageSocialAccount(
+    userId: number,
+    pageId: string,
+    accessToken: string,
+    displayName: string
+  ): Promise<void> {
+    const platform = "facebook-page";
+    const now = new Date();
+    await db
+      .update(schema.socialAccounts)
+      .set({ isDefault: false, updatedAt: now })
+      .where(and(eq(schema.socialAccounts.userId, userId), eq(schema.socialAccounts.platform, platform)));
+
+    const existing = await db
+      .select()
+      .from(schema.socialAccounts)
+      .where(
+        and(
+          eq(schema.socialAccounts.userId, userId),
+          eq(schema.socialAccounts.platform, platform),
+          eq(schema.socialAccounts.externalId, pageId)
+        )
+      )
+      .limit(1);
+
+    if (existing.length > 0) {
+      await db
+        .update(schema.socialAccounts)
+        .set({
+          accessToken,
+          displayName,
+          isDefault: true,
+          updatedAt: now,
+        })
+        .where(eq(schema.socialAccounts.id, existing[0].id));
+      return;
+    }
+
+    await db.insert(schema.socialAccounts).values({
+      userId,
+      platform,
+      displayName,
+      externalId: pageId,
+      accessToken,
+      isDefault: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  async deleteSocialAccount(userId: number, accountId: number): Promise<void> {
+    const result = await db
+      .delete(schema.socialAccounts)
+      .where(and(eq(schema.socialAccounts.id, accountId), eq(schema.socialAccounts.userId, userId)))
+      .returning();
+    if (result.length === 0) throw new Error("Social account not found");
+  }
+
+  async setDefaultSocialAccount(userId: number, accountId: number): Promise<void> {
+    const rows = await db
+      .select()
+      .from(schema.socialAccounts)
+      .where(and(eq(schema.socialAccounts.id, accountId), eq(schema.socialAccounts.userId, userId)))
+      .limit(1);
+    if (!rows.length) throw new Error("Social account not found");
+    const platform = rows[0].platform;
+    const now = new Date();
+    await db
+      .update(schema.socialAccounts)
+      .set({ isDefault: false, updatedAt: now })
+      .where(and(eq(schema.socialAccounts.userId, userId), eq(schema.socialAccounts.platform, platform)));
+    await db
+      .update(schema.socialAccounts)
+      .set({ isDefault: true, updatedAt: now })
+      .where(eq(schema.socialAccounts.id, accountId));
+  }
+
+  async getEffectiveFacebookPageCredentials(
+    userId: number
+  ): Promise<{ pageToken: string; pageId: string } | null> {
+    const def = await db
+      .select()
+      .from(schema.socialAccounts)
+      .where(
+        and(
+          eq(schema.socialAccounts.userId, userId),
+          eq(schema.socialAccounts.platform, "facebook-page"),
+          eq(schema.socialAccounts.isDefault, true)
+        )
+      )
+      .limit(1);
+    if (def[0]?.accessToken && def[0].externalId) {
+      return { pageToken: def[0].accessToken, pageId: def[0].externalId };
+    }
+    const user = await this.getUser(userId);
+    if (user?.facebookPageToken && user.facebookPageId) {
+      return { pageToken: user.facebookPageToken, pageId: user.facebookPageId };
+    }
+    return null;
   }
 
   async deleteUser(userId: number): Promise<User> {

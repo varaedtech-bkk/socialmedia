@@ -521,9 +521,8 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
                           : platforms.filter((p) => p !== "instagram")
                       );
                     }}
-                    disabled={mediaFiles.length === 0}
                   />
-                  <span>Instagram</span>
+                  <span>Instagram (requires image/video)</span>
                 </label>
               )}
 

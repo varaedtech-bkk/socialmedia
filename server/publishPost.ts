@@ -44,8 +44,9 @@ export const publishPost = async (postId: number) => {
   for (const platform of post.platforms) {
     try {
       switch (platform) {
-        case "facebook-page":
-          if (!user.facebookPageToken || !user.facebookPageId) {
+        case "facebook-page": {
+          const fbCreds = await storage.getEffectiveFacebookPageCredentials(post.userId);
+          if (!fbCreds) {
             errors.push({
               platform: "Facebook Page",
               error: "Facebook Page not connected",
@@ -62,16 +63,16 @@ export const publishPost = async (postId: number) => {
             break;
           }
 
-          const fbPageEndpoint = `https://graph.facebook.com/v22.0/${user.facebookPageId}/feed`;
+          const fbPageEndpoint = `https://graph.facebook.com/v22.0/${fbCreds.pageId}/feed`;
           let fbPageData: any = {
             message: post.content,
-            access_token: user.facebookPageToken,
+            access_token: fbCreds.pageToken,
           };
 
           if (mediaType === "image" || mediaType === "video") {
             const mediaIds = await uploadMediaToPlatforms(
-              user.facebookPageToken,
-              user.facebookPageId,
+              fbCreds.pageToken,
+              fbCreds.pageId,
               post.mediaUrls as string[], // Type assertion
               mediaType,
               "facebook" // Specify the platform
@@ -92,6 +93,7 @@ export const publishPost = async (postId: number) => {
             console.log(`✅ Successfully posted to Facebook Page: ${fbPageResponse.data.id}`);
           }
           break;
+        }
 
       case "instagram":
         // Instagram API with Instagram Login

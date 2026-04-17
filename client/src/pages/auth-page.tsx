@@ -1,6 +1,8 @@
 import { useAuth } from "@/hooks/use-auth";
 import { useLocation } from "wouter";
 import { useEffect } from "react";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,19 +22,56 @@ import { Loader2 } from "lucide-react";
 import AnalogClock from "@/components/ui/analog-clock";
 
 
+const TELEGRAM_BIND_STORAGE = "telegram_bind_token_pending";
+
 export default function AuthPage() {
   const [, setLocation] = useLocation();
-  
+  const { toast } = useToast();
+
   // Safely get auth context - useAuth now handles missing provider gracefully
   const auth = useAuth();
   const { user, loginMutation, registerMutation } = auth;
 
-  // Redirect if already logged in → dashboard, not landing
   useEffect(() => {
-    if (user) {
-      setLocation("/app");
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get("telegram_bind");
+    if (t) {
+      sessionStorage.setItem(TELEGRAM_BIND_STORAGE, t);
+      params.delete("telegram_bind");
+      const next = params.toString();
+      window.history.replaceState({}, "", `${window.location.pathname}${next ? `?${next}` : ""}`);
     }
-  }, [user, setLocation]);
+  }, []);
+
+  // After login/register: attach Telegram if pending, then go to dashboard
+  useEffect(() => {
+    if (!user) return;
+    const token = typeof window !== "undefined" ? sessionStorage.getItem(TELEGRAM_BIND_STORAGE) : null;
+    if (token) {
+      (async () => {
+        try {
+          await apiRequest("POST", "/api/telegram/attach", { token });
+          sessionStorage.removeItem(TELEGRAM_BIND_STORAGE);
+          await queryClient.invalidateQueries({ queryKey: ["/api/user"] });
+          toast({
+            title: "Telegram linked",
+            description: "You can post from Telegram with /fb",
+          });
+        } catch (e) {
+          toast({
+            title: "Telegram link failed",
+            description: e instanceof Error ? e.message : "Unknown error",
+            variant: "destructive",
+          });
+        } finally {
+          setLocation("/app");
+        }
+      })();
+      return;
+    }
+    setLocation("/app");
+  }, [user, setLocation, toast]);
 
   // Show loading state if auth is still initializing
   if (auth.isLoading) {
