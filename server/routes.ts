@@ -26,6 +26,7 @@ import {
 import { getN8nIntegrationStatus, triggerN8nWorkflow } from "./n8n";
 import { registerTelegramRoutes } from "./routes-telegram";
 import { verifyTelegramBindToken } from "./telegram-link";
+import { openRouterRequestHeaders } from "./openrouter-headers";
 
 /** Log errors with context for debugging; captures message, stack, and axios response when present */
 function logError(context: string, error: unknown, extra?: Record<string, unknown>): void {
@@ -845,6 +846,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/ai/generate-post", async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
 
+    const dbUser = await storage.getUser(req.user!.id);
+    if (!dbUser) {
+      return res.status(401).json({
+        error: "Your session no longer matches an account in the database. Please log out and log in again.",
+      });
+    }
+
     const schema = z.object({
       prompt: z.string().min(5).max(1000),
       platforms: z.array(z.string()).optional().default([]),
@@ -867,10 +875,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: openRouterRequestHeaders(apiKey),
         body: JSON.stringify({
           model,
           messages: [
@@ -884,9 +889,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }),
       });
 
-      const result = await response.json();
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string; code?: number };
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+
       if (!response.ok) {
-        throw new Error(result?.error?.message || "AI generation failed");
+        const rawMsg = result?.error?.message || "AI generation failed";
+        logError("OpenRouter chat completions HTTP error", new Error(rawMsg), {
+          userId: req.user?.id,
+          httpStatus: response.status,
+          openRouterCode: result?.error?.code,
+        });
+        const msgLower = String(rawMsg).toLowerCase();
+        if (response.status === 401 || msgLower.includes("user not found")) {
+          return res.status(400).json({
+            error:
+              "OpenRouter rejected the request (invalid or expired API key, or key restrictions). Create a new key at https://openrouter.ai/keys and set OPENROUTER_API_KEY on the server. Set CLIENT_URL or BASE_URL to your public site URL for the HTTP-Referer header.",
+          });
+        }
+        throw new Error(rawMsg);
       }
 
       const content = result?.choices?.[0]?.message?.content?.trim();
