@@ -5,21 +5,25 @@ function normalizeApiErrorMessage(status: number, rawText: string, contentType: 
   const looksLikeHtml =
     text.toLowerCase().includes("<!doctype") || text.toLowerCase().includes("<html");
 
+  // Prefer JSON body when present (e.g. POST /api/login returns 401 + { error: "Invalid username or password" })
+  if (contentType.includes("application/json") && text) {
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };
+      const fromJson = parsed?.error ?? parsed?.message;
+      if (typeof fromJson === "string" && fromJson.trim()) {
+        return fromJson.trim();
+      }
+    } catch {
+      /* fall through to status defaults */
+    }
+  }
+
   if (status === 401) return "Session expired. Please log in again.";
   if (status === 403) return "You do not have permission to perform this action.";
   if (status === 404) return "Requested resource was not found.";
   if (status === 413) return "Upload is too large. Please choose a smaller file.";
   if (status === 429) return "Too many requests. Please wait and try again.";
   if (status >= 500) return "Server error. Please try again in a moment.";
-
-  if (contentType.includes("application/json")) {
-    try {
-      const parsed = JSON.parse(text);
-      return parsed?.error || parsed?.message || "Request failed. Please try again.";
-    } catch {
-      return "Request failed. Please try again.";
-    }
-  }
 
   if (looksLikeHtml) {
     return `Server returned an unexpected response (${status}). Please try again.`;
