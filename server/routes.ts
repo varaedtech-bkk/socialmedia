@@ -16,6 +16,7 @@ import express from "express";
 
 import { initializeScheduledPosts, schedulePost } from "./schedulePost";
 import { publishPost } from "./publishPost";
+import { removePublishedPostFromPlatforms } from "./remotePostDelete";
 import { insertPostSchema } from "@shared/schema";
 import { checkPostQuota } from "@/lib/postQuota";
 import { checkPlatformRateLimit } from "@/lib/rateLimiter";
@@ -1108,6 +1109,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const postId = parseInt(req.params.postId, 10);
       console.log("Deleting post with ID:", postId);
 
+      const post = await storage.getPost(postId);
+      if (!post || post.userId !== req.user!.id) {
+        return res.status(404).json({ error: "Post not found" });
+      }
+
+      const user = await storage.getUser(req.user!.id);
+      if (!user) {
+        return res.status(401).json({ error: "User not found" });
+      }
+
+      const remoteDeletion = await removePublishedPostFromPlatforms(post, user);
       const deletedPost = await storage.deletePost(postId);
       console.log("Successfully deleted post:", deletedPost);
 
@@ -1117,7 +1129,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         );
       }
 
-      res.status(200).json(deletedPost); // Return the deleted post as JSON
+      res.status(200).json({ ...deletedPost, remoteDeletion });
     } catch (err) {
       logError("Delete post", err, { postId: req.params.postId, userId: req.user?.id });
       res.status(400).json({ error: (err as Error).message });

@@ -308,6 +308,9 @@ export const publishPost = async (postId: number) => {
 
   const mediaType = post.mediaType as "text" | "image" | "video" | "pdf"; // Type assertion
 
+  /** Graph API ids for DELETE on Facebook / Instagram (saved to analytics when publish succeeds) */
+  const platformRemoteIds: Record<string, string> = {};
+
   for (const platform of post.platforms) {
     try {
       switch (platform) {
@@ -357,7 +360,9 @@ export const publishPost = async (postId: number) => {
               error: fbPageResponse.data.error?.message || "Facebook API error",
             });
           } else {
-            console.log(`✅ Successfully posted to Facebook Page: ${fbPageResponse.data.id}`);
+            const fbId = fbPageResponse.data.id;
+            if (fbId) platformRemoteIds["facebook-page"] = String(fbId);
+            console.log(`✅ Successfully posted to Facebook Page: ${fbId}`);
           }
           break;
         }
@@ -484,6 +489,7 @@ export const publishPost = async (postId: number) => {
                 );
 
                 console.log("✅ Instagram: Post published successfully:", mediaId);
+                if (mediaId) platformRemoteIds["instagram"] = String(mediaId);
                 lastError = null;
                 break;
               } catch (error) {
@@ -958,6 +964,16 @@ export const publishPost = async (postId: number) => {
 
   // Only mark as published if there are no errors
   if (errors.length === 0) {
+    if (Object.keys(platformRemoteIds).length > 0) {
+      const prevIds =
+        (post.analytics as { platformIds?: Record<string, string> } | undefined)?.platformIds || {};
+      await storage.updatePost(post.id, {
+        analytics: {
+          ...post.analytics,
+          platformIds: { ...prevIds, ...platformRemoteIds },
+        },
+      });
+    }
     await storage.updatePostStatus(post.id, "published");
     console.log(`✅ Post ${post.id} published successfully to all platforms`);
   } else {

@@ -3,6 +3,7 @@ import fsp from "fs/promises";
 import path from "path";
 import { storage } from "./storage";
 import { publishPost } from "./publishPost";
+import { formatRemoteDeleteReply, removePublishedPostFromPlatforms } from "./remotePostDelete";
 import { createTelegramBindToken } from "./telegram-link";
 import { openRouterRequestHeaders } from "./openrouter-headers";
 import type { Platform, User } from "@shared/schema";
@@ -435,8 +436,10 @@ export function registerTelegramRoutes(app: Express): void {
           await sendTelegramMessage(chatId, "Post not found or not owned by you.");
           return res.sendStatus(200);
         }
+        const remoteDeletion = await removePublishedPostFromPlatforms(post, user);
         const deleted = await storage.deletePost(id);
-        await sendTelegramMessage(chatId, `Post #${deleted.id} deleted.`);
+        const summary = formatRemoteDeleteReply(remoteDeletion);
+        await sendTelegramMessage(chatId, `Post #${deleted.id}\n\n${summary}`);
         return res.sendStatus(200);
       }
 

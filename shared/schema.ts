@@ -151,6 +151,8 @@ export const posts = pgTable(
       likes?: number;
       shares?: number;
       comments?: number;
+      /** Graph API object ids after successful publish, used for remote delete */
+      platformIds?: Record<string, string>;
     }>().notNull().default({}),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
