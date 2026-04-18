@@ -136,9 +136,9 @@ function LoginForm() {
   const form = useForm({
     resolver: zodResolver(loginSchema),
     defaultValues: {
-      username: "superuser",
-      password: "superpass123"
-    }
+      username: "",
+      password: "",
+    },
   });
 
   const handleSubmit = async (data: { username: string; password: string }) => {

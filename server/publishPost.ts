@@ -11,6 +11,52 @@ import { dirname } from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+const INSTAGRAM_CAPTION_MAX = 2200;
+
+function instagramGraphErrorPayload(error: unknown): {
+  message?: string;
+  code?: number;
+  is_transient?: boolean;
+  httpStatus?: number;
+} | null {
+  if (!axios.isAxiosError(error)) return null;
+  const ig = error.response?.data?.error as
+    | { message?: string; code?: number; is_transient?: boolean }
+    | undefined;
+  if (ig && typeof ig === "object") {
+    return {
+      ...ig,
+      httpStatus: error.response?.status,
+    };
+  }
+  return {
+    message: error.message,
+    httpStatus: error.response?.status,
+  };
+}
+
+function isInstagramRetryableError(error: unknown): boolean {
+  const ig = instagramGraphErrorPayload(error);
+  if (!ig) return false;
+  if (ig.is_transient) return true;
+  if (ig.code === 1 || ig.code === 2) return true;
+  if (ig.httpStatus != null && ig.httpStatus >= 500) return true;
+  const msg = (ig.message || "").toLowerCase();
+  if (msg.includes("unexpected error") && (msg.includes("retry") || msg.includes("later"))) return true;
+  if (msg.includes("try again later")) return true;
+  if (msg.includes("please retry")) return true;
+  if (msg.includes("service temporarily unavailable")) return true;
+  return false;
+}
+
+function instagramUserFacingErrorMessage(error: unknown): string {
+  const ig = instagramGraphErrorPayload(error);
+  if (ig && isInstagramRetryableError(error)) {
+    return "Instagram is temporarily unavailable. Please try again in a minute.";
+  }
+  return ig?.message || (error instanceof Error ? error.message : "Failed to post to Instagram");
+}
+
 export const publishPost = async (postId: number) => {
   const post = await storage.getPost(postId);
   if (!post) {
@@ -124,95 +170,134 @@ export const publishPost = async (postId: number) => {
           // Get the first media URL (Instagram single post)
           const mediaUrl = mediaUrls[0];
           const baseUrl = process.env.BASE_URL || "https://siamshoppinghub.com";
-          
-          // Instagram requires publicly accessible URLs
-          // For local development, this won't work - need a public URL or CDN
-          const publicMediaUrl = mediaUrl.startsWith("http") 
-            ? mediaUrl 
+          const publicMediaUrl = mediaUrl.startsWith("http")
+            ? mediaUrl
             : `${baseUrl}${mediaUrl}`;
 
-          console.log("📸 Instagram: Creating media container for:", publicMediaUrl);
-
-          // Step 1: Create media container
-          const createMediaParams: Record<string, string> = {
-            access_token: user.instagramToken,
-            caption: post.content || "",
-          };
-
-          if (mediaType === "image") {
-            createMediaParams.image_url = publicMediaUrl;
-          } else if (mediaType === "video") {
-            createMediaParams.video_url = publicMediaUrl;
-            createMediaParams.media_type = "REELS"; // or "VIDEO" for feed videos
+          const rawCaption = post.content || "";
+          const caption =
+            rawCaption.length > INSTAGRAM_CAPTION_MAX
+              ? rawCaption.slice(0, INSTAGRAM_CAPTION_MAX)
+              : rawCaption;
+          if (rawCaption.length > INSTAGRAM_CAPTION_MAX) {
+            console.warn(
+              `📸 Instagram: Caption truncated from ${rawCaption.length} to ${INSTAGRAM_CAPTION_MAX} characters`
+            );
           }
 
-          const createMediaResponse = await axios.post(
-            `https://graph.instagram.com/v22.0/${user.instagramBusinessAccountId}/media`,
-            null,
-            { params: createMediaParams }
-          );
+          const maxAttempts = 5;
+          const retryDelaysMs = [2000, 4000, 8000, 12000, 16000];
+          let lastError: unknown;
 
-          const creationId = createMediaResponse.data.id;
-          if (!creationId) {
-            throw new Error(createMediaResponse.data.error?.message || "Failed to create Instagram media container");
-          }
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              console.log(
+                `📸 Instagram: Creating media container (attempt ${attempt}/${maxAttempts}) for:`,
+                publicMediaUrl
+              );
 
-          console.log("📸 Instagram: Media container created:", creationId);
+              const createMediaParams: Record<string, string> = {
+                access_token: user.instagramToken,
+                caption,
+              };
 
-          // Step 2: For videos, wait for processing (check status)
-          if (mediaType === "video") {
-            let status = "IN_PROGRESS";
-            let attempts = 0;
-            const maxAttempts = 30; // Max 5 minutes (30 * 10 seconds)
+              if (mediaType === "image") {
+                createMediaParams.image_url = publicMediaUrl;
+              } else if (mediaType === "video") {
+                createMediaParams.video_url = publicMediaUrl;
+                createMediaParams.media_type = "REELS";
+              }
 
-            while (status === "IN_PROGRESS" && attempts < maxAttempts) {
-              await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
-              
-              const statusResponse = await axios.get(
-                `https://graph.instagram.com/v22.0/${creationId}`,
+              const createForm = new URLSearchParams(createMediaParams);
+              const createMediaResponse = await axios.post(
+                `https://graph.instagram.com/v22.0/${user.instagramBusinessAccountId}/media`,
+                createForm.toString(),
                 {
-                  params: {
-                    fields: "status_code",
-                    access_token: user.instagramToken,
-                  },
+                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
                 }
               );
-              
-              status = statusResponse.data.status_code;
-              attempts++;
-              console.log(`📸 Instagram: Video processing status: ${status} (attempt ${attempts})`);
-            }
 
-            if (status !== "FINISHED") {
-              throw new Error(`Video processing failed with status: ${status}`);
-            }
-          }
+              const creationId = createMediaResponse.data.id;
+              if (!creationId) {
+                throw new Error(
+                  createMediaResponse.data.error?.message || "Failed to create Instagram media container"
+                );
+              }
 
-          // Step 3: Publish the media
-          const publishResponse = await axios.post(
-            `https://graph.instagram.com/v22.0/${user.instagramBusinessAccountId}/media_publish`,
-            null,
-            {
-              params: {
+              console.log("📸 Instagram: Media container created:", creationId);
+
+              if (mediaType === "video") {
+                let status = "IN_PROGRESS";
+                let attempts = 0;
+                const maxVideoAttempts = 30;
+
+                while (status === "IN_PROGRESS" && attempts < maxVideoAttempts) {
+                  await new Promise((resolve) => setTimeout(resolve, 10000));
+
+                  const statusResponse = await axios.get(
+                    `https://graph.instagram.com/v22.0/${creationId}`,
+                    {
+                      params: {
+                        fields: "status_code",
+                        access_token: user.instagramToken,
+                      },
+                    }
+                  );
+
+                  status = statusResponse.data.status_code;
+                  attempts++;
+                  console.log(`📸 Instagram: Video processing status: ${status} (attempt ${attempts})`);
+                }
+
+                if (status !== "FINISHED") {
+                  throw new Error(`Video processing failed with status: ${status}`);
+                }
+              }
+
+              const publishForm = new URLSearchParams({
                 creation_id: creationId,
                 access_token: user.instagramToken,
-              },
-            }
-          );
+              });
+              const publishResponse = await axios.post(
+                `https://graph.instagram.com/v22.0/${user.instagramBusinessAccountId}/media_publish`,
+                publishForm.toString(),
+                {
+                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                }
+              );
 
-          const mediaId = publishResponse.data.id;
-          if (!mediaId) {
-            throw new Error(publishResponse.data.error?.message || "Failed to publish Instagram media");
+              const mediaId = publishResponse.data.id;
+              if (!mediaId) {
+                throw new Error(publishResponse.data.error?.message || "Failed to publish Instagram media");
+              }
+
+              console.log("✅ Instagram: Post published successfully:", mediaId);
+              lastError = null;
+              break;
+            } catch (error) {
+              lastError = error;
+              const igError = instagramGraphErrorPayload(error);
+              const shouldRetry = attempt < maxAttempts && isInstagramRetryableError(error);
+
+              console.error(
+                `❌ Instagram attempt ${attempt} failed:`,
+                igError || (error instanceof Error ? error.message : error)
+              );
+
+              if (!shouldRetry) break;
+              await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt - 1]));
+            }
           }
 
-          console.log("✅ Instagram: Post published successfully:", mediaId);
+          if (lastError) {
+            throw lastError;
+          }
         } catch (error) {
           if (axios.isAxiosError(error)) {
-            const igError = error.response?.data?.error;
-            console.error("❌ Instagram API Error:", igError || error.message);
+            console.error("❌ Instagram API Error:", instagramGraphErrorPayload(error) || error.message);
             errors.push({
               platform: "Instagram",
-              error: igError?.message || `Instagram API error: ${error.response?.statusText || error.message}`,
+              error: instagramUserFacingErrorMessage(error),
             });
           } else {
             console.error("❌ Instagram posting error:", error);
