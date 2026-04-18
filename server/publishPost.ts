@@ -127,13 +127,33 @@ async function prepareInstagramImageUrlForPublishing(args: {
     inputBuffer = Buffer.from(res.data);
   }
 
+  const INSTAGRAM_MIN_EDGE_PX = 320;
+  const INSTAGRAM_MAX_EDGE_PX = 1440;
+
   let jpegBuf: Buffer;
   try {
     jpegBuf = await sharp(inputBuffer)
       .rotate()
-      .resize(1440, 1440, { fit: "inside", withoutEnlargement: true })
+      .resize(INSTAGRAM_MAX_EDGE_PX, INSTAGRAM_MAX_EDGE_PX, {
+        fit: "inside",
+        withoutEnlargement: true,
+      })
       .jpeg({ quality: 90, mozjpeg: true })
       .toBuffer();
+
+    const meta = await sharp(jpegBuf).metadata();
+    const w = meta.width ?? 0;
+    const h = meta.height ?? 0;
+    if (w > 0 && h > 0 && Math.min(w, h) < INSTAGRAM_MIN_EDGE_PX) {
+      jpegBuf = await sharp(jpegBuf)
+        .resize(INSTAGRAM_MIN_EDGE_PX, INSTAGRAM_MIN_EDGE_PX, { fit: "outside" })
+        .jpeg({ quality: 90, mozjpeg: true })
+        .toBuffer();
+      const m2 = await sharp(jpegBuf).metadata();
+      console.log(
+        `📸 Instagram: Upscaled image to meet Meta minimum (${INSTAGRAM_MIN_EDGE_PX}px short edge): ${m2.width}x${m2.height}`
+      );
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`Could not prepare image for Instagram (convert to JPEG): ${msg}`);
@@ -191,6 +211,71 @@ async function waitForInstagramMediaContainerReady(
   throw new Error(
     "Instagram media did not become ready in time. Try again in a minute, or use a smaller JPEG/PNG under 8MB."
   );
+}
+
+function isInstagramMediaPublishNotReadyError(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  const e = error.response?.data?.error as
+    | { code?: number; error_subcode?: number; message?: string }
+    | undefined;
+  if (!e) return false;
+  if (e.code === 9007) return true;
+  if (e.error_subcode === 2207027) return true;
+  return (e.message || "").toLowerCase().includes("media id is not available");
+}
+
+/**
+ * Instagram can return FINISHED on the container while media_publish still answers 9007
+ * ("Media ID is not available") for a short window. Settle + retry publish only.
+ */
+async function publishInstagramMediaContainer(
+  igUserId: string,
+  creationId: string,
+  accessToken: string
+): Promise<string> {
+  await new Promise((r) => setTimeout(r, 4000));
+  console.log("📸 Instagram: Settled after FINISHED; calling media_publish");
+
+  const delaysBetweenPublishAttemptsMs = [0, 3500, 5000, 7000, 9000, 11000, 13000, 16000];
+  let lastError: unknown;
+
+  for (let i = 0; i < delaysBetweenPublishAttemptsMs.length; i++) {
+    if (delaysBetweenPublishAttemptsMs[i] > 0) {
+      console.log(
+        `📸 Instagram: Waiting ${delaysBetweenPublishAttemptsMs[i]}ms before media_publish retry (${i + 1}/${delaysBetweenPublishAttemptsMs.length})`
+      );
+      await new Promise((r) => setTimeout(r, delaysBetweenPublishAttemptsMs[i]));
+    }
+
+    try {
+      const publishForm = new URLSearchParams({
+        creation_id: creationId,
+        access_token: accessToken,
+      });
+      const publishResponse = await axios.post(
+        `https://graph.instagram.com/v22.0/${igUserId}/media_publish`,
+        publishForm.toString(),
+        {
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        }
+      );
+
+      const mediaId = publishResponse.data.id;
+      if (!mediaId) {
+        throw new Error(publishResponse.data.error?.message || "Failed to publish Instagram media");
+      }
+      return mediaId;
+    } catch (error) {
+      lastError = error;
+      if (isInstagramMediaPublishNotReadyError(error) && i < delaysBetweenPublishAttemptsMs.length - 1) {
+        console.warn("📸 Instagram: media_publish returned not-ready; retrying after backoff");
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw lastError;
 }
 
 export const publishPost = async (postId: number) => {
@@ -392,22 +477,11 @@ export const publishPost = async (postId: number) => {
                   mediaType === "video" ? "video" : "image"
                 );
 
-                const publishForm = new URLSearchParams({
-                  creation_id: creationId,
-                  access_token: user.instagramToken,
-                });
-                const publishResponse = await axios.post(
-                  `https://graph.instagram.com/v22.0/${igUserId}/media_publish`,
-                  publishForm.toString(),
-                  {
-                    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                  }
+                const mediaId = await publishInstagramMediaContainer(
+                  igUserId,
+                  creationId,
+                  user.instagramToken
                 );
-
-                const mediaId = publishResponse.data.id;
-                if (!mediaId) {
-                  throw new Error(publishResponse.data.error?.message || "Failed to publish Instagram media");
-                }
 
                 console.log("✅ Instagram: Post published successfully:", mediaId);
                 lastError = null;
