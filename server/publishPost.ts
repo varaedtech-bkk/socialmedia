@@ -1,4 +1,5 @@
 import axios from "axios";
+import sharp from "sharp";
 import { uploadMediaToPlatforms } from "./uploadToMedia";
 import { storage } from "./storage";
 import fsp from "fs/promises"; // fs/promises for other operations
@@ -55,6 +56,94 @@ function instagramUserFacingErrorMessage(error: unknown): string {
     return "Instagram is temporarily unavailable. Please try again in a minute.";
   }
   return ig?.message || (error instanceof Error ? error.message : "Failed to post to Instagram");
+}
+
+function pathnameLowerFromUrlOrPath(urlOrPath: string): string {
+  try {
+    if (urlOrPath.startsWith("http://") || urlOrPath.startsWith("https://")) {
+      return new URL(urlOrPath).pathname.toLowerCase();
+    }
+  } catch {
+    /* fall through */
+  }
+  return (urlOrPath.split("?")[0] || "").toLowerCase();
+}
+
+/** Instagram `image_url` publishing is most reliable with JPEG; PNG/WebP often yields generic Meta 500/code 2. */
+async function prepareInstagramImageUrlForPublishing(args: {
+  postId: number;
+  mediaUrl: string;
+  publicMediaUrl: string;
+}): Promise<{ imageUrl: string; cleanup: () => Promise<void> }> {
+  const baseUrl = (process.env.BASE_URL || "https://siamshoppinghub.com").replace(/\/$/, "");
+  const pathKey = pathnameLowerFromUrlOrPath(args.publicMediaUrl);
+
+  if (pathKey.endsWith(".jpg") || pathKey.endsWith(".jpeg")) {
+    return { imageUrl: args.publicMediaUrl, cleanup: async () => {} };
+  }
+
+  const resolveLocalUploadBuffer = async (): Promise<Buffer | null> => {
+    const relFromMedia =
+      args.mediaUrl.startsWith("/uploads/") ? args.mediaUrl.slice(1) : null;
+    if (relFromMedia) {
+      const diskPath = path.join(process.cwd(), relFromMedia);
+      return fsp.readFile(diskPath);
+    }
+    if (args.publicMediaUrl.startsWith(`${baseUrl}/`)) {
+      try {
+        const p = new URL(args.publicMediaUrl).pathname.replace(/^\//, "");
+        if (p.startsWith("uploads/")) {
+          return fsp.readFile(path.join(process.cwd(), p));
+        }
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  let inputBuffer = await resolveLocalUploadBuffer();
+  if (!inputBuffer) {
+    const res = await axios.get<ArrayBuffer>(args.publicMediaUrl, {
+      responseType: "arraybuffer",
+      timeout: 45000,
+      maxContentLength: 12 * 1024 * 1024,
+      headers: { "User-Agent": "facebookexternalhit/1.1" },
+      validateStatus: () => true,
+    });
+    if (res.status >= 400) {
+      throw new Error(
+        `Image URL returned HTTP ${res.status}. Instagram must fetch your image over public HTTPS (no login wall). URL: ${args.publicMediaUrl}`
+      );
+    }
+    inputBuffer = Buffer.from(res.data);
+  }
+
+  let jpegBuf: Buffer;
+  try {
+    jpegBuf = await sharp(inputBuffer)
+      .rotate()
+      .resize(1440, 1440, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 90, mozjpeg: true })
+      .toBuffer();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`Could not prepare image for Instagram (convert to JPEG): ${msg}`);
+  }
+
+  const outName = `ig-publish-${args.postId}-${Date.now()}.jpg`;
+  const outRel = path.join("uploads", outName);
+  const outPath = path.join(process.cwd(), outRel);
+  await fsp.mkdir(path.dirname(outPath), { recursive: true });
+  await fsp.writeFile(outPath, jpegBuf);
+
+  const imageUrl = `${baseUrl}/uploads/${outName}`;
+  return {
+    imageUrl,
+    cleanup: async () => {
+      await fsp.unlink(outPath).catch(() => {});
+    },
+  };
 }
 
 export const publishPost = async (postId: number) => {
@@ -185,112 +274,141 @@ export const publishPost = async (postId: number) => {
             );
           }
 
+          const igProfile = user.instagramUserProfile as { user_id?: string } | null | undefined;
+          const igUserId = (igProfile?.user_id || user.instagramBusinessAccountId)!.toString();
+
+          let imageUrlForInstagram = publicMediaUrl;
+          let cleanupInstagramTempImage: (() => Promise<void>) | null = null;
+          if (mediaType === "image") {
+            const prepared = await prepareInstagramImageUrlForPublishing({
+              postId: post.id,
+              mediaUrl,
+              publicMediaUrl,
+            });
+            imageUrlForInstagram = prepared.imageUrl;
+            cleanupInstagramTempImage = prepared.cleanup;
+            if (imageUrlForInstagram !== publicMediaUrl) {
+              console.log(
+                "📸 Instagram: Normalized image to JPEG for publishing:",
+                publicMediaUrl,
+                "→",
+                imageUrlForInstagram
+              );
+            }
+          }
+
           const maxAttempts = 5;
           const retryDelaysMs = [2000, 4000, 8000, 12000, 16000];
           let lastError: unknown;
 
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-              console.log(
-                `📸 Instagram: Creating media container (attempt ${attempt}/${maxAttempts}) for:`,
-                publicMediaUrl
-              );
-
-              const createMediaParams: Record<string, string> = {
-                access_token: user.instagramToken,
-                caption,
-              };
-
-              if (mediaType === "image") {
-                createMediaParams.image_url = publicMediaUrl;
-              } else if (mediaType === "video") {
-                createMediaParams.video_url = publicMediaUrl;
-                createMediaParams.media_type = "REELS";
-              }
-
-              const createForm = new URLSearchParams(createMediaParams);
-              const createMediaResponse = await axios.post(
-                `https://graph.instagram.com/v22.0/${user.instagramBusinessAccountId}/media`,
-                createForm.toString(),
-                {
-                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                }
-              );
-
-              const creationId = createMediaResponse.data.id;
-              if (!creationId) {
-                throw new Error(
-                  createMediaResponse.data.error?.message || "Failed to create Instagram media container"
+          try {
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              try {
+                console.log(
+                  `📸 Instagram: Creating media container (attempt ${attempt}/${maxAttempts}) for:`,
+                  imageUrlForInstagram
                 );
-              }
 
-              console.log("📸 Instagram: Media container created:", creationId);
+                const createMediaParams: Record<string, string> = {
+                  access_token: user.instagramToken,
+                  caption,
+                };
 
-              if (mediaType === "video") {
-                let status = "IN_PROGRESS";
-                let attempts = 0;
-                const maxVideoAttempts = 30;
+                if (mediaType === "image") {
+                  createMediaParams.image_url = imageUrlForInstagram;
+                } else if (mediaType === "video") {
+                  createMediaParams.video_url = publicMediaUrl;
+                  createMediaParams.media_type = "REELS";
+                }
 
-                while (status === "IN_PROGRESS" && attempts < maxVideoAttempts) {
-                  await new Promise((resolve) => setTimeout(resolve, 10000));
+                const createForm = new URLSearchParams(createMediaParams);
+                const createMediaResponse = await axios.post(
+                  `https://graph.instagram.com/v22.0/${igUserId}/media`,
+                  createForm.toString(),
+                  {
+                    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                  }
+                );
 
-                  const statusResponse = await axios.get(
-                    `https://graph.instagram.com/v22.0/${creationId}`,
-                    {
-                      params: {
-                        fields: "status_code",
-                        access_token: user.instagramToken,
-                      },
-                    }
+                const creationId = createMediaResponse.data.id;
+                if (!creationId) {
+                  throw new Error(
+                    createMediaResponse.data.error?.message || "Failed to create Instagram media container"
                   );
-
-                  status = statusResponse.data.status_code;
-                  attempts++;
-                  console.log(`📸 Instagram: Video processing status: ${status} (attempt ${attempts})`);
                 }
 
-                if (status !== "FINISHED") {
-                  throw new Error(`Video processing failed with status: ${status}`);
+                console.log("📸 Instagram: Media container created:", creationId);
+
+                if (mediaType === "video") {
+                  let status = "IN_PROGRESS";
+                  let attempts = 0;
+                  const maxVideoAttempts = 30;
+
+                  while (status === "IN_PROGRESS" && attempts < maxVideoAttempts) {
+                    await new Promise((resolve) => setTimeout(resolve, 10000));
+
+                    const statusResponse = await axios.get(
+                      `https://graph.instagram.com/v22.0/${creationId}`,
+                      {
+                        params: {
+                          fields: "status_code",
+                          access_token: user.instagramToken,
+                        },
+                      }
+                    );
+
+                    status = statusResponse.data.status_code;
+                    attempts++;
+                    console.log(`📸 Instagram: Video processing status: ${status} (attempt ${attempts})`);
+                  }
+
+                  if (status !== "FINISHED") {
+                    throw new Error(`Video processing failed with status: ${status}`);
+                  }
                 }
+
+                const publishForm = new URLSearchParams({
+                  creation_id: creationId,
+                  access_token: user.instagramToken,
+                });
+                const publishResponse = await axios.post(
+                  `https://graph.instagram.com/v22.0/${igUserId}/media_publish`,
+                  publishForm.toString(),
+                  {
+                    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                  }
+                );
+
+                const mediaId = publishResponse.data.id;
+                if (!mediaId) {
+                  throw new Error(publishResponse.data.error?.message || "Failed to publish Instagram media");
+                }
+
+                console.log("✅ Instagram: Post published successfully:", mediaId);
+                lastError = null;
+                break;
+              } catch (error) {
+                lastError = error;
+                const igError = instagramGraphErrorPayload(error);
+                const shouldRetry = attempt < maxAttempts && isInstagramRetryableError(error);
+
+                console.error(
+                  `❌ Instagram attempt ${attempt} failed:`,
+                  igError || (error instanceof Error ? error.message : error)
+                );
+
+                if (!shouldRetry) break;
+                await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt - 1]));
               }
-
-              const publishForm = new URLSearchParams({
-                creation_id: creationId,
-                access_token: user.instagramToken,
-              });
-              const publishResponse = await axios.post(
-                `https://graph.instagram.com/v22.0/${user.instagramBusinessAccountId}/media_publish`,
-                publishForm.toString(),
-                {
-                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                }
-              );
-
-              const mediaId = publishResponse.data.id;
-              if (!mediaId) {
-                throw new Error(publishResponse.data.error?.message || "Failed to publish Instagram media");
-              }
-
-              console.log("✅ Instagram: Post published successfully:", mediaId);
-              lastError = null;
-              break;
-            } catch (error) {
-              lastError = error;
-              const igError = instagramGraphErrorPayload(error);
-              const shouldRetry = attempt < maxAttempts && isInstagramRetryableError(error);
-
-              console.error(
-                `❌ Instagram attempt ${attempt} failed:`,
-                igError || (error instanceof Error ? error.message : error)
-              );
-
-              if (!shouldRetry) break;
-              await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt - 1]));
             }
-          }
 
-          if (lastError) {
-            throw lastError;
+            if (lastError) {
+              throw lastError;
+            }
+          } finally {
+            if (cleanupInstagramTempImage) {
+              await cleanupInstagramTempImage().catch(() => {});
+            }
           }
         } catch (error) {
           if (axios.isAxiosError(error)) {
