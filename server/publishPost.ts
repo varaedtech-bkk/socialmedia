@@ -55,6 +55,14 @@ function instagramUserFacingErrorMessage(error: unknown): string {
   if (ig && isInstagramRetryableError(error)) {
     return "Instagram is temporarily unavailable. Please try again in a minute.";
   }
+  if (axios.isAxiosError(error)) {
+    const full = error.response?.data?.error as
+      | { message?: string; error_user_msg?: string; code?: number }
+      | undefined;
+    if (full?.code === 9007 && typeof full.error_user_msg === "string" && full.error_user_msg.trim()) {
+      return full.error_user_msg.trim();
+    }
+  }
   return ig?.message || (error instanceof Error ? error.message : "Failed to post to Instagram");
 }
 
@@ -144,6 +152,45 @@ async function prepareInstagramImageUrlForPublishing(args: {
       await fsp.unlink(outPath).catch(() => {});
     },
   };
+}
+
+/**
+ * Instagram often needs the container in FINISHED state before media_publish.
+ * Publishing immediately after create can return OAuthException 9007 "Media ID is not available".
+ */
+async function waitForInstagramMediaContainerReady(
+  creationId: string,
+  accessToken: string,
+  kind: "image" | "video"
+): Promise<void> {
+  const pollIntervalMs = kind === "video" ? 10_000 : 2_000;
+  const maxAttempts = kind === "video" ? 30 : 45;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1) {
+      await new Promise((r) => setTimeout(r, pollIntervalMs));
+    }
+
+    const statusResponse = await axios.get(`https://graph.instagram.com/v22.0/${creationId}`, {
+      params: { fields: "status_code", access_token: accessToken },
+    });
+
+    const raw = statusResponse.data?.status_code;
+    const status = typeof raw === "string" ? raw : "IN_PROGRESS";
+
+    console.log(`📸 Instagram: ${kind} container status: ${status} (poll ${attempt}/${maxAttempts})`);
+
+    if (status === "FINISHED") {
+      return;
+    }
+    if (status === "ERROR" || status === "EXPIRED") {
+      throw new Error(`Instagram could not process this media (status: ${status}). Try another image or format.`);
+    }
+  }
+
+  throw new Error(
+    "Instagram media did not become ready in time. Try again in a minute, or use a smaller JPEG/PNG under 8MB."
+  );
 }
 
 export const publishPost = async (postId: number) => {
@@ -339,33 +386,11 @@ export const publishPost = async (postId: number) => {
 
                 console.log("📸 Instagram: Media container created:", creationId);
 
-                if (mediaType === "video") {
-                  let status = "IN_PROGRESS";
-                  let attempts = 0;
-                  const maxVideoAttempts = 30;
-
-                  while (status === "IN_PROGRESS" && attempts < maxVideoAttempts) {
-                    await new Promise((resolve) => setTimeout(resolve, 10000));
-
-                    const statusResponse = await axios.get(
-                      `https://graph.instagram.com/v22.0/${creationId}`,
-                      {
-                        params: {
-                          fields: "status_code",
-                          access_token: user.instagramToken,
-                        },
-                      }
-                    );
-
-                    status = statusResponse.data.status_code;
-                    attempts++;
-                    console.log(`📸 Instagram: Video processing status: ${status} (attempt ${attempts})`);
-                  }
-
-                  if (status !== "FINISHED") {
-                    throw new Error(`Video processing failed with status: ${status}`);
-                  }
-                }
+                await waitForInstagramMediaContainerReady(
+                  creationId,
+                  user.instagramToken,
+                  mediaType === "video" ? "video" : "image"
+                );
 
                 const publishForm = new URLSearchParams({
                   creation_id: creationId,
