@@ -37,13 +37,16 @@ export default function LandingPage() {
               Multi<span className="text-indigo-400">Social</span> Studio
             </span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap justify-end">
+            <Link href="/request-access">
+              <a className="text-sm text-slate-300 hover:text-white">Request access</a>
+            </Link>
             <Link href="/auth">
               <a className="text-sm text-slate-300 hover:text-white">Log in</a>
             </Link>
             <Link href="/auth">
               <Button className="rounded-full px-4 py-2 text-sm font-medium shadow-lg shadow-indigo-500/40 bg-indigo-500 hover:bg-indigo-400">
-                Get started free
+                Get started
               </Button>
             </Link>
           </div>

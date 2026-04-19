@@ -68,6 +68,7 @@ export const posts = pgTable("posts", {
 	status: text().default('draft').notNull(),
 	platforms: json().default(["facebook-page"]).notNull(),
 	mediaUrls: json("media_urls").default([]).notNull(),
+	contentOverrides: json("content_overrides").default({}).notNull(),
 	mediaType: text("media_type"),
 	analytics: json().default({}).notNull(),
 	createdAt: timestamp("created_at", { mode: 'string' }).defaultNow().notNull(),

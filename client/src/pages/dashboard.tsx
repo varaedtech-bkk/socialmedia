@@ -5,20 +5,19 @@ import PostEditor from "@/components/post-editor";
 import ScheduleCalendar from "@/components/schedule-calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Calendar, BarChart2, Home, LogOut, Menu, Trash, CreditCard, Settings } from "lucide-react";
+import { Calendar, BarChart2, Trash } from "lucide-react";
 import { Link } from "wouter";
 import SocialConnect from "@/components/social-connect";
 import ConnectedAccounts from "@/components/connected-accounts";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
-import Clock from "@/components/ui/clock";
 import { SubscriptionStatus } from "@/components/subscription-status";
 import { apiRequest } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
+import { appCard } from "@/lib/app-surface";
+import { AppLayout } from "@/components/app-layout";
 
 type Subscription = {
   plan: string;
@@ -27,76 +26,15 @@ type Subscription = {
   posts_used: number;
   posts_limit: number | typeof Infinity;
   featureDisabled?: boolean;
+  /** Stored workspace package (Basic vs Advance); aligns with AI entitlements after Stripe upgrade. */
+  packageTier?: string;
+  advanceCheckoutAvailable?: boolean;
 };
-
-function Sidebar({ className = "" }: { className?: string }) {
-  const { logoutMutation, user } = useAuth();
-
-  const { data: subscription } = useQuery<Subscription>({
-    queryKey: ["subscription", user?.id],
-    queryFn: async () => {
-      const res = await apiRequest("GET", "/api/subscription");
-      return res.json();
-    },
-    staleTime: 1000 * 60 * 5, // 5 minutes cache
-    enabled: !!user?.id, // Only fetch if user is logged in
-  });
-
-  return (
-    <div className={className}>
-      <div className="p-6">
-        <h1 className="text-xl font-bold bg-gradient-to-r from-primary to-purple-600 bg-clip-text text-transparent">
-          Multi<span className="text-primary">Social</span> Studio
-        </h1>
-        <Clock className="mt-2" />
-      </div>
-      <Separator />
-      <nav className="p-4">
-        <div className="space-y-2">
-          <Link href="/app" className="flex items-center gap-3 px-3 py-2 text-primary rounded-lg bg-primary/5">
-            <Home className="h-5 w-5" />
-            Dashboard
-          </Link>
-          <Link href="/analytics" className="flex items-center gap-3 px-3 py-2 text-muted-foreground hover:text-primary rounded-lg hover:bg-primary/5 transition-colors">
-            <BarChart2 className="h-5 w-5" />
-            Analytics
-          </Link>
-          <Link href="/billing" className="flex items-center gap-3 px-3 py-2 text-muted-foreground hover:text-primary rounded-lg hover:bg-primary/5 transition-colors">
-            <CreditCard className="h-5 w-5" />
-            Billing
-            {subscription?.plan && (
-              <span className="ml-auto text-xs px-2 py-1 bg-primary/10 rounded-full">
-                {subscription.plan}
-              </span>
-            )}
-          </Link>
-          <Link href="/admin" className="flex items-center gap-3 px-3 py-2 text-muted-foreground hover:text-primary rounded-lg hover:bg-primary/5 transition-colors">
-            <Settings className="h-5 w-5" />
-            Admin Settings
-          </Link>
-        </div>
-      </nav>
-      <Separator />
-      <div className="p-4">
-        <Button
-          variant="ghost"
-          className="w-full justify-start text-muted-foreground hover:text-primary"
-          onClick={() => logoutMutation.mutate()}
-          disabled={logoutMutation.isPending}
-        >
-          <LogOut className="h-5 w-5 mr-3" />
-          {logoutMutation.isPending ? "Logging out..." : "Logout"}
-        </Button>
-      </div>
-    </div>
-  );
-}
 
 export default function Dashboard() {
   const { user } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [isOpen, setIsOpen] = useState(false);
 
   // Fetch subscription for upgrade button visibility
   const { data: subscription } = useQuery<Subscription>({
@@ -169,66 +107,49 @@ export default function Dashboard() {
 
   if (isError) {
     return (
-      <div className="container max-w-7xl py-6">
-        <EmptyState 
+      <AppLayout shellWidth="full" showBackLink={false}>
+        <EmptyState
           title="Failed to load posts"
           description={error.message}
           action={
-            <Button onClick={() => queryClient.refetchQueries({ queryKey: ["posts"] })}>
-              Retry
-            </Button>
+            <Button onClick={() => queryClient.refetchQueries({ queryKey: ["posts"] })}>Retry</Button>
           }
         />
-      </div>
+      </AppLayout>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background flex">
-      {/* Desktop Sidebar */}
-      <aside className="hidden md:block w-64 border-r bg-card">
-        <Sidebar />
-      </aside>
-
-      {/* Mobile Sidebar */}
-      <Sheet open={isOpen} onOpenChange={setIsOpen}>
-        <SheetTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="md:hidden fixed top-4 left-4 z-10"
-          >
-            <Menu className="h-6 w-6" />
-          </Button>
-        </SheetTrigger>
-        <SheetContent side="left" className="w-64 p-0">
-          <Sidebar />
-        </SheetContent>
-      </Sheet>
-
-      {/* Main Content */}
-      <main className="flex-1 overflow-auto p-4 md:p-6">
-        <div className="container max-w-7xl py-6">
+    <AppLayout shellWidth="full" showBackLink={false}>
+      <div>
           <div className="mb-8">
-            <div className="flex flex-col md:flex-row justify-between items-start gap-4">
+            <div className="flex flex-col gap-6 rounded-xl border border-zinc-200/80 bg-white p-6 shadow-sm ring-1 ring-zinc-100/80 md:flex-row md:items-start md:justify-between md:p-8">
               <div>
-                <h2 className="text-2xl md:text-3xl font-bold tracking-tight">
+                <h2 className="text-2xl font-semibold tracking-tight text-zinc-900 md:text-3xl">
                   Welcome back, {user?.username}!
                 </h2>
-                <p className="text-muted-foreground mt-2">
+                <p className="mt-2 text-sm leading-relaxed text-zinc-600 md:text-base">
                   Manage your social media presence across platforms.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
                 <SubscriptionStatus />
-                {!subscription?.featureDisabled && (
+                {user?.packageTier === "basic" ? (
                   <Button
-                    variant="outline"
+                    variant={subscription?.advanceCheckoutAvailable ? "default" : "outline"}
                     size="sm"
                     asChild
-                    className="hidden sm:flex"
+                    className="w-full sm:w-auto shrink-0"
                   >
-                    <Link href="/billing">Upgrade</Link>
+                    <Link href="/billing">
+                      {subscription?.advanceCheckoutAvailable
+                        ? "Upgrade to Advance"
+                        : "Plans & billing"}
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button variant="outline" size="sm" asChild className="w-full sm:w-auto shrink-0">
+                    <Link href="/billing">Billing</Link>
                   </Button>
                 )}
               </div>
@@ -238,9 +159,9 @@ export default function Dashboard() {
           <div className="grid gap-6">
             {/* Compose Section */}
             <section>
-              <Card>
-                <CardHeader>
-                  <CardTitle>Create Post</CardTitle>
+              <Card className={appCard}>
+                <CardHeader className="pb-4">
+                  <CardTitle className="text-lg font-semibold text-zinc-900">Create Post</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <PostEditor 
@@ -255,18 +176,24 @@ export default function Dashboard() {
             {/* Posts Grid */}
             <div className="grid lg:grid-cols-[2fr,1fr] gap-6">
               <section>
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Recent Posts</CardTitle>
+                <Card className={appCard}>
+                  <CardHeader className="pb-4">
+                    <CardTitle className="text-lg font-semibold text-zinc-900">Recent Posts</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <Tabs defaultValue="scheduled">
-                      <TabsList className="mb-4">
-                        <TabsTrigger value="scheduled">
+                      <TabsList className="mb-4 h-auto gap-1 rounded-lg border border-zinc-200/80 bg-zinc-100/80 p-1">
+                        <TabsTrigger
+                          value="scheduled"
+                          className="rounded-md data-[state=active]:bg-white data-[state=active]:text-primary data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
+                        >
                           <Calendar className="h-4 w-4 mr-2" />
                           Scheduled
                         </TabsTrigger>
-                        <TabsTrigger value="published">
+                        <TabsTrigger
+                          value="published"
+                          className="rounded-md data-[state=active]:bg-white data-[state=active]:text-primary data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
+                        >
                           <BarChart2 className="h-4 w-4 mr-2" />
                           Published
                         </TabsTrigger>
@@ -290,7 +217,7 @@ export default function Dashboard() {
                             {scheduledPosts.map((post) => (
                               <div
                                 key={post.id}
-                                className="p-4 border rounded-lg bg-card hover:bg-accent transition-colors"
+                                className="rounded-lg border border-zinc-200/80 bg-zinc-50/50 p-4 transition-colors hover:bg-zinc-100/80"
                               >
                                 <div className="flex justify-between items-start">
                                   <p className="text-sm line-clamp-2">{post.content}</p>
@@ -332,20 +259,24 @@ export default function Dashboard() {
                             {publishedPosts.map((post) => (
                               <div
                                 key={post.id}
-                                className="p-4 border rounded-lg bg-card hover:bg-accent transition-colors"
+                                className="rounded-lg border border-zinc-200/80 bg-zinc-50/50 p-4 transition-colors hover:bg-zinc-100/80"
                               >
                                 <p className="text-sm line-clamp-2">{post.content}</p>
                                 <div className="flex flex-wrap gap-2 mt-3">
-                                  {Object.entries(post.analytics ?? {}).map(
-                                    ([key, value]) => (
+                                  {Object.entries(post.analytics ?? {}).map(([key, value]) => {
+                                    const display =
+                                      typeof value === "number"
+                                        ? value.toLocaleString()
+                                        : JSON.stringify(value);
+                                    return (
                                       <div
                                         key={key}
                                         className="text-xs px-2 py-1 bg-primary/5 rounded"
                                       >
-                                        {key}: {value}
+                                        {key}: {display}
                                       </div>
-                                    )
-                                  )}
+                                    );
+                                  })}
                                 </div>
                               </div>
                             ))}
@@ -361,9 +292,9 @@ export default function Dashboard() {
                 <SocialConnect />
                 <ConnectedAccounts />
 
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Schedule</CardTitle>
+                <Card className={appCard}>
+                  <CardHeader className="pb-4">
+                    <CardTitle className="text-lg font-semibold text-zinc-900">Schedule</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <ScheduleCalendar posts={posts} />
@@ -373,7 +304,6 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-      </main>
-    </div>
+    </AppLayout>
   );
 }

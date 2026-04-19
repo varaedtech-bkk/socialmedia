@@ -108,6 +108,16 @@ export const ADMIN_FEATURES: AdminFeature[] = [
     category: "users",
   },
   {
+    id: "access-requests",
+    label: "Access requests",
+    description: "Review purchase / access requests and onboard clients",
+    icon: "UserCheck",
+    path: "/admin/access",
+    requiredPermissions: ["users.view"],
+    enabled: true,
+    category: "users",
+  },
+  {
     id: "feature-flags",
     label: "Feature Flags",
     description: "Manage application feature flags",

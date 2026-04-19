@@ -1,5 +1,6 @@
 import axios from "axios";
 import sharp from "sharp";
+import { effectivePublishedCaption } from "@shared/platform-limits";
 import { uploadMediaToPlatforms } from "./uploadToMedia";
 import { storage } from "./storage";
 import fsp from "fs/promises"; // fs/promises for other operations
@@ -13,6 +14,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const INSTAGRAM_CAPTION_MAX = 2200;
+
+/** Caption sent to a network: per-platform override when non-empty, else shared `content`. */
+export function captionForPlatform(
+  post: { content: string; contentOverrides?: Record<string, string> | null },
+  platform: string
+): string {
+  return effectivePublishedCaption(platform, post.content, post.contentOverrides);
+}
 
 function instagramGraphErrorPayload(error: unknown): {
   message?: string;
@@ -335,7 +344,7 @@ export const publishPost = async (postId: number) => {
 
           const fbPageEndpoint = `https://graph.facebook.com/v22.0/${fbCreds.pageId}/feed`;
           let fbPageData: any = {
-            message: post.content,
+            message: captionForPlatform(post, platform),
             access_token: fbCreds.pageToken,
           };
 
@@ -400,7 +409,7 @@ export const publishPost = async (postId: number) => {
             ? mediaUrl
             : `${baseUrl}${mediaUrl}`;
 
-          const rawCaption = post.content || "";
+          const rawCaption = captionForPlatform(post, platform) || "";
           const caption =
             rawCaption.length > INSTAGRAM_CAPTION_MAX
               ? rawCaption.slice(0, INSTAGRAM_CAPTION_MAX)
@@ -623,7 +632,7 @@ export const publishPost = async (postId: number) => {
               specificContent: {
                 "com.linkedin.ugc.ShareContent": {
                   shareCommentary: {
-                    text: post.content,
+                    text: captionForPlatform(post, platform),
                   },
                   shareMediaCategory:
                     mediaType === "text" ? "NONE" : mediaType.toUpperCase(),
@@ -712,7 +721,7 @@ export const publishPost = async (postId: number) => {
                   },
                   data: {
                     url: publicMediaUrl,
-                    caption: post.content || "",
+                    caption: captionForPlatform(post, platform) || "",
                   },
                 }
               );
@@ -735,7 +744,7 @@ export const publishPost = async (postId: number) => {
                   },
                   data: {
                     url: publicMediaUrl,
-                    caption: post.content || "",
+                    caption: captionForPlatform(post, platform) || "",
                   },
                 }
               );
@@ -765,7 +774,7 @@ export const publishPost = async (postId: number) => {
                 type: mediaType === "image" ? "image" : "video",
                 [mediaType === "image" ? "image" : "video"]: {
                   id: mediaId,
-                  caption: post.content || "",
+                  caption: captionForPlatform(post, platform) || "",
                 },
               },
               {
@@ -887,10 +896,11 @@ export const publishPost = async (postId: number) => {
             console.log(`📹 YouTube: Uploading video (${(videoSize / 1024 / 1024).toFixed(2)} MB)`);
 
             // Prepare video metadata
+            const ytCaption = captionForPlatform(post, platform);
             const videoMetadata = {
               snippet: {
-                title: post.content.substring(0, 100) || "Untitled Video", // YouTube title max 100 chars
-                description: post.content || "",
+                title: ytCaption.substring(0, 100) || "Untitled Video", // YouTube title max 100 chars
+                description: ytCaption || "",
                 tags: [], // Can be extended to parse tags from content
                 categoryId: "22", // People & Blogs (default)
               },

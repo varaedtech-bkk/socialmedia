@@ -12,6 +12,8 @@ type SubscriptionResponse = {
   posts_used: number;
   posts_limit: number | typeof Infinity;
   featureDisabled?: boolean;
+  packageTier?: string;
+  advanceCheckoutAvailable?: boolean;
 };
 
 export const SubscriptionStatus = () => {
@@ -21,7 +23,6 @@ export const SubscriptionStatus = () => {
     queryKey: ["subscription", user?.id],
     queryFn: async () => {
       const response = await apiRequest("GET", "/api/subscription");
-      if (!response.ok) throw new Error("Failed to fetch subscription");
       return response.json();
     },
     enabled: !!user?.id,
@@ -38,10 +39,23 @@ export const SubscriptionStatus = () => {
     ? '∞' 
     : subscription?.posts_limit || '∞';
 
+  const workspaceTier = subscription?.packageTier || "basic";
+
   return (
     <div className="flex flex-col gap-1 text-sm">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="font-medium">Workspace:</span>
+        <span
+          className={cn(
+            "px-2 py-1 rounded-full text-xs capitalize",
+            workspaceTier === "advance" ? "bg-primary/10 text-primary" : "bg-muted",
+          )}
+        >
+          {workspaceTier}
+        </span>
+      </div>
       <div className="flex items-center gap-2">
-        <span className="font-medium">Plan:</span>
+        <span className="font-medium">Posts plan:</span>
         <span className={cn(
           "px-2 py-1 rounded-full text-xs",
           subscription?.plan === 'pro' ? 'bg-primary/10 text-primary' :

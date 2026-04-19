@@ -7,6 +7,9 @@ import { promisify } from "util";
 import { storage } from "./storage";
 import { User as SelectUser } from "@shared/schema";
 import dotenv from "dotenv";
+import { sanitizeUserForClient } from "./sanitize-user";
+import { getFeatureFlag, FEATURE_KEYS } from "./feature-config";
+import { getUserCapabilities } from "./user-capabilities";
 
 dotenv.config(); // Load environment variables
 
@@ -65,7 +68,13 @@ export function setupAuth(app: Express) {
             console.log(`[AUTH] ❌ Invalid password for user "${username}"`);
             return done(null, false, { message: "Invalid username or password" });
           }
-          
+
+          if (user.role !== "super_admin" && user.isApproved === false) {
+            return done(null, false, {
+              message: "Your account is pending administrator approval. You will be notified when access is ready.",
+            });
+          }
+
           console.log(`[AUTH] ✅✅✅ Login successful for user "${username}"`);
           return done(null, user);
         } catch (error) {
@@ -83,6 +92,16 @@ export function setupAuth(app: Express) {
   });
 
   app.post("/api/register", async (req, res, next) => {
+    const allowEnv = process.env.ALLOW_PUBLIC_REGISTRATION === "true";
+    const allowFlag = await getFeatureFlag(FEATURE_KEYS.PUBLIC_REGISTRATION_ENABLED);
+    if (!allowEnv && !allowFlag) {
+      return res.status(403).json({
+        error:
+          "Self-registration is disabled. Use Request access on the site or contact your administrator.",
+        code: "REGISTRATION_DISABLED",
+      });
+    }
+
     const existingUser = await storage.getUserByUsername(req.body.username);
     if (existingUser) {
       return res.status(400).send("Username already exists");
@@ -95,7 +114,10 @@ export function setupAuth(app: Express) {
 
     req.login(user, (err) => {
       if (err) return next(err);
-      res.status(201).json(user);
+      res.status(201).json({
+        ...sanitizeUserForClient(user),
+        capabilities: getUserCapabilities(user),
+      });
     });
   });
 
@@ -123,9 +145,10 @@ export function setupAuth(app: Express) {
           return res.status(500).json({ error: "Failed to establish session" });
         }
         console.log(`[LOGIN API] ✅✅✅ Login successful, session created for: ${user.username}`);
-        // Remove password from response
-        const { password: _, ...userWithoutPassword } = user;
-        return res.status(200).json(userWithoutPassword);
+        return res.status(200).json({
+          ...sanitizeUserForClient(user),
+          capabilities: getUserCapabilities(user),
+        });
       });
     })(req, res, next);
   });
@@ -139,8 +162,10 @@ export function setupAuth(app: Express) {
 
   app.get("/api/user", (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
-    // Remove password from response for security
-    const { password: _, ...userWithoutPassword } = req.user!;
-    res.json(userWithoutPassword);
+    const u = req.user!;
+    res.json({
+      ...sanitizeUserForClient(u),
+      capabilities: getUserCapabilities(u),
+    });
   });
 }

@@ -1,10 +1,22 @@
+import "./env-bootstrap";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import rateLimit from 'express-rate-limit';
 import { initializeFeatureFlags } from "./feature-config";
+import { initializeNotificationSettings } from "./notification-config";
+import { handleStripeWebhook } from "./stripe-advance";
 
 const app = express();
+
+// Stripe webhooks need the raw body for signature verification (must run before express.json).
+app.post(
+  "/api/webhooks/stripe",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    void handleStripeWebhook(req, res);
+  }
+);
 
 // Middleware for parsing JSON and URL-encoded data
 app.use(express.json());
@@ -15,7 +27,12 @@ const apiLimiter = rateLimit({
   max: 100, // Limit each IP to 100 requests per window
 });
 
-app.use('/api/', apiLimiter);
+app.use("/api/", (req, res, next) => {
+  if (req.path === "/webhooks/stripe" || req.originalUrl.startsWith("/api/webhooks/stripe")) {
+    return next();
+  }
+  return apiLimiter(req, res, next);
+});
 app.use('/api/auth', rateLimit({ 
   windowMs: 60 * 1000, 
   max: 5 
@@ -72,7 +89,8 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   try {
     // Initialize feature flags
     await initializeFeatureFlags();
-    
+    await initializeNotificationSettings();
+
     const server = await registerRoutes(app);
 
     // Setup Vite in development mode

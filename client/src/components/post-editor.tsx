@@ -1,7 +1,13 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertPostSchema, InsertPost } from "@shared/schema";
+import {
+  getStrictestCaptionLimit,
+  PLATFORM_DISPLAY_NAME,
+  validateCaptionsForTargets,
+  validateMediaFilesForPlatforms,
+} from "@shared/platform-limits";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, getErrorMessageFromResponse, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -30,6 +36,8 @@ import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
 import TimezoneSelect from "react-timezone-select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Separator } from "@/components/ui/separator";
+import { PostPlatformPreviewTabs } from "@/components/post-platform-preview";
 
 interface PostEditorProps {
   onSuccess?: () => void;
@@ -43,9 +51,14 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
   );
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [dialogPlatforms, setDialogPlatforms] = useState<InsertPost["platforms"]>([]);
+  const [perPlatformCaptions, setPerPlatformCaptions] = useState(false);
+  const [dialogCaptionOverrides, setDialogCaptionOverrides] = useState<Record<string, string>>({});
   const [aiPrompt, setAiPrompt] = useState("");
   const { user } = useAuth();
   const { toast } = useToast();
+  const canUseAi = user?.capabilities?.aiGeneration === true;
+  const isAdvanceNoKey =
+    user?.capabilities?.packageTier === "advance" && !user?.capabilities?.aiGeneration;
 
   const form = useForm<InsertPost>({
     resolver: zodResolver(insertPostSchema),
@@ -57,6 +70,49 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
       mediaType: "text",
     },
   });
+
+  const watchedContent = form.watch("content");
+  const watchedPlatforms = form.watch("platforms");
+
+  const composerPlatformIssues = useMemo(() => {
+    const pf = watchedPlatforms as string[];
+    if (pf.length === 0) {
+      return { errors: [] as string[], warnings: [] as string[] };
+    }
+    const cap = validateCaptionsForTargets({
+      platforms: pf,
+      sharedContent: watchedContent,
+      perPlatform: false,
+    });
+    const media = validateMediaFilesForPlatforms({ files: mediaFiles, platforms: pf });
+    return {
+      errors: [...cap.errors, ...media.errors],
+      warnings: [...cap.warnings, ...media.warnings],
+    };
+  }, [watchedContent, watchedPlatforms, mediaFiles]);
+
+  const dialogPlatformIssues = useMemo(() => {
+    const pf = dialogPlatforms as string[];
+    if (pf.length === 0) {
+      return { errors: [] as string[], warnings: [] as string[] };
+    }
+    const cap = validateCaptionsForTargets({
+      platforms: pf,
+      sharedContent: watchedContent,
+      perPlatform: perPlatformCaptions,
+      contentOverrides: dialogCaptionOverrides,
+    });
+    const media = validateMediaFilesForPlatforms({ files: mediaFiles, platforms: pf });
+    return {
+      errors: [...cap.errors, ...media.errors],
+      warnings: [...cap.warnings, ...media.warnings],
+    };
+  }, [dialogPlatforms, watchedContent, perPlatformCaptions, dialogCaptionOverrides, mediaFiles]);
+
+  const strictestComposerCaption = useMemo(
+    () => getStrictestCaptionLimit(watchedPlatforms as string[]),
+    [watchedPlatforms],
+  );
 
   const createPost = useMutation({
     mutationFn: async (
@@ -85,6 +141,10 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
       mediaFiles.forEach((file) => {
         formData.append("media", file);
       });
+
+      if (data.contentOverrides && Object.keys(data.contentOverrides).length > 0) {
+        formData.append("contentOverrides", JSON.stringify(data.contentOverrides));
+      }
 
       console.log("Sending form data to backend:", {
         content: data.content,
@@ -200,14 +260,16 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
       const maxFileSize = 100 * 1024 * 1024; // 100 MB
   
       const isValid = files.every((file) => {
-        const isTypeValid = platforms.every((platform) => {
-          return allowedTypes[platform as keyof typeof allowedTypes].includes(
-            file.type
-          );
-        });
-  
+        const isTypeValid =
+          platforms.length === 0 ||
+          platforms.every((platform) => {
+            const list = allowedTypes[platform as keyof typeof allowedTypes];
+            if (!list) return true;
+            return list.includes(file.type);
+          });
+
         const isSizeValid = file.size <= maxFileSize;
-  
+
         if (!isTypeValid) {
           toast({
             title: "Invalid file type",
@@ -215,7 +277,7 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
             variant: "destructive",
           });
         }
-  
+
         if (!isSizeValid) {
           toast({
             title: "File too large",
@@ -223,14 +285,30 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
             variant: "destructive",
           });
         }
-  
+
         return isTypeValid && isSizeValid;
       });
-  
+
       if (!isValid) {
-        return; // Stop if any file is invalid
+        return;
       }
-  
+
+      if (platforms.length > 0) {
+        const { errors: platformMediaErrors } = validateMediaFilesForPlatforms({
+          files,
+          platforms,
+        });
+        if (platformMediaErrors.length > 0) {
+          toast({
+            title: "File exceeds a platform limit",
+            description: platformMediaErrors.slice(0, 3).join(" ") +
+              (platformMediaErrors.length > 3 ? ` (+${platformMediaErrors.length - 3} more)` : ""),
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+
       setMediaFiles(files);
     }
   };
@@ -293,8 +371,31 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
       return;
     }
 
+    const dialogTargetIds = (preSelected.length > 0 ? preSelected : compatiblePlatforms.map((p) => p.id)) as string[];
+
+    const captionCheck = validateCaptionsForTargets({
+      platforms: dialogTargetIds,
+      sharedContent: data.content,
+      perPlatform: false,
+    });
+    const mediaCheck = validateMediaFilesForPlatforms({
+      files: mediaFiles,
+      platforms: dialogTargetIds,
+    });
+    const blockers = [...captionCheck.errors, ...mediaCheck.errors];
+    if (blockers.length > 0) {
+      toast({
+        title: "Fix limits before preview",
+        description: blockers.slice(0, 2).join(" ") + (blockers.length > 2 ? ` (+${blockers.length - 2} more)` : ""),
+        variant: "destructive",
+      });
+      return;
+    }
+
     // Set dialog platforms to pre-selected or all compatible if none were selected
-    setDialogPlatforms((preSelected.length > 0 ? preSelected : compatiblePlatforms.map(p => p.id)) as InsertPost["platforms"]);
+    setDialogPlatforms(dialogTargetIds as InsertPost["platforms"]);
+    setPerPlatformCaptions(false);
+    setDialogCaptionOverrides({});
     setShowConfirmDialog(true);
   };
 
@@ -321,12 +422,44 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
       return;
     }
 
+    const baseContent = form.getValues("content");
+    const contentOverrides: Record<string, string> = {};
+    if (perPlatformCaptions) {
+      for (const p of selectedPlatforms) {
+        const t = dialogCaptionOverrides[p as string];
+        if (typeof t === "string" && t.trim().length > 0 && t !== baseContent) {
+          contentOverrides[p as string] = t;
+        }
+      }
+    }
+
+    const finalCaptionCheck = validateCaptionsForTargets({
+      platforms: selectedPlatforms as string[],
+      sharedContent: baseContent,
+      perPlatform: perPlatformCaptions,
+      contentOverrides: dialogCaptionOverrides,
+    });
+    const finalMediaCheck = validateMediaFilesForPlatforms({
+      files: mediaFiles,
+      platforms: selectedPlatforms as string[],
+    });
+    const finalBlockers = [...finalCaptionCheck.errors, ...finalMediaCheck.errors];
+    if (finalBlockers.length > 0) {
+      toast({
+        title: "Cannot publish yet",
+        description: finalBlockers.slice(0, 2).join(" ") + (finalBlockers.length > 2 ? ` (+${finalBlockers.length - 2} more)` : ""),
+        variant: "destructive",
+      });
+      return;
+    }
+
     // Proceed with mutation
     createPost.mutate({
       ...formData,
       platforms: selectedPlatforms,
       files: mediaFiles,
       timezone: selectedTimezone,
+      contentOverrides: Object.keys(contentOverrides).length > 0 ? contentOverrides : undefined,
     });
 
     setShowConfirmDialog(false);
@@ -338,41 +471,95 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
       onSubmit={form.handleSubmit(handleFormSubmit)}
       className="space-y-4"
     >
-      <div className="grid gap-2">
-        <div className="flex flex-col sm:flex-row gap-2">
-          <Textarea
-            placeholder="Ask AI to write your post. Example: Launch announcement for our new product with friendly tone."
-            className="min-h-[72px] resize-none"
-            value={aiPrompt}
-            onChange={(e) => setAiPrompt(e.target.value)}
-          />
-          <Button
-            type="button"
-            variant="outline"
-            className="sm:w-[220px]"
-            disabled={generateWithAi.isPending}
-            onClick={() => generateWithAi.mutate()}
-          >
-            {generateWithAi.isPending ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Generating...
-              </>
-            ) : (
-              <>
-                <Sparkles className="mr-2 h-4 w-4" />
-                Generate with AI
-              </>
-            )}
-          </Button>
+      {canUseAi ? (
+        <div className="grid gap-2">
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Textarea
+              placeholder="Ask AI to write your post. Example: Launch announcement for our new product with friendly tone."
+              className="min-h-[72px] resize-none"
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              className="sm:w-[220px]"
+              disabled={generateWithAi.isPending}
+              onClick={() => generateWithAi.mutate()}
+            >
+              {generateWithAi.isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Generating...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  Generate with AI
+                </>
+              )}
+            </Button>
+          </div>
         </div>
-      </div>
+      ) : isAdvanceNoKey ? (
+        <Alert>
+          <Sparkles className="h-4 w-4" />
+          <AlertDescription>
+            Advance plan: add your OpenRouter API key under{" "}
+            <Link href="/integrations" className="underline font-medium text-primary">
+              Integrations
+            </Link>{" "}
+            to enable AI drafts.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       <Textarea
         placeholder="What's on your mind?"
         className="min-h-[150px] resize-none"
         {...form.register("content")}
       />
+
+      {watchedPlatforms.length > 0 && (
+        <div className="space-y-2">
+          {strictestComposerCaption && watchedContent.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              For every network you selected at once, stay within about{" "}
+              <span className="font-medium text-foreground">{strictestComposerCaption.maxChars.toLocaleString()}</span>{" "}
+              characters (tightest among:{" "}
+              {strictestComposerCaption.limitingPlatforms
+                .slice(0, 4)
+                .map((id) => PLATFORM_DISPLAY_NAME[id] ?? id)
+                .join(", ")}
+              {strictestComposerCaption.limitingPlatforms.length > 4 ? "…" : ""}).
+            </p>
+          )}
+          {composerPlatformIssues.errors.length > 0 && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                <ul className="list-disc pl-4 space-y-1 text-sm">
+                  {composerPlatformIssues.errors.map((e, i) => (
+                    <li key={i}>{e}</li>
+                  ))}
+                </ul>
+              </AlertDescription>
+            </Alert>
+          )}
+          {composerPlatformIssues.warnings.length > 0 && composerPlatformIssues.errors.length === 0 && (
+            <Alert className="border-amber-500/40 bg-amber-500/5">
+              <AlertCircle className="h-4 w-4 text-amber-600" />
+              <AlertDescription>
+                <ul className="list-disc pl-4 space-y-1 text-sm text-amber-950 dark:text-amber-100">
+                  {composerPlatformIssues.warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
+      )}
 
       {/* Media Preview */}
       {mediaFiles.length > 0 && (
@@ -732,7 +919,9 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
                 type="submit"
                 className="w-full sm:w-auto"
                 disabled={
-                  createPost.isPending || form.watch("platforms").length === 0
+                  createPost.isPending ||
+                  form.watch("platforms").length === 0 ||
+                  composerPlatformIssues.errors.length > 0
                 }
               >
                 {createPost.isPending && (
@@ -747,95 +936,160 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
       })()}
     </form>
 
-    {/* Platform Selection Confirmation Dialog */}
-    <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
-      <DialogContent className="sm:max-w-[500px]">
-        <DialogHeader>
-          <DialogTitle>Select Platforms to Post</DialogTitle>
-          <DialogDescription>
-            Choose which platforms you want to post to. Some platforms may be disabled based on your content type.
+    {/* Platform preview + selection */}
+    <Dialog
+      open={showConfirmDialog}
+      onOpenChange={(open) => {
+        setShowConfirmDialog(open);
+        if (!open) {
+          setPerPlatformCaptions(false);
+          setDialogCaptionOverrides({});
+        }
+      }}
+    >
+      <DialogContent className="flex max-h-[min(92vh,900px)] w-[calc(100vw-1.5rem)] max-w-3xl flex-col gap-0 overflow-hidden rounded-xl border-zinc-200/90 bg-white p-0 text-zinc-900 shadow-xl sm:max-w-4xl">
+        <DialogHeader className="space-y-1 border-b border-zinc-200/80 bg-white px-4 py-4 pr-12 text-left sm:px-6 sm:py-5">
+          <DialogTitle className="text-lg font-semibold tracking-tight text-zinc-900">Preview & confirm</DialogTitle>
+          <DialogDescription className="text-sm leading-relaxed text-zinc-600">
+            Tabs show an <strong>approximate</strong> look per network. Use one caption for all, or turn on per-platform
+            captions so each network can get its own text at publish time. Then choose where to publish.
           </DialogDescription>
         </DialogHeader>
-        
-        <div className="space-y-4 py-4">
-          <div className="flex items-center justify-between border-b pb-2">
-            <span className="text-sm font-medium">Platforms</span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                const connectedPlatforms = getConnectedPlatforms();
-                const compatiblePlatforms = connectedPlatforms
-                  .filter(p => isPlatformCompatible(p.id))
-                  .map(p => p.id) as InsertPost["platforms"];
-                setDialogPlatforms(compatiblePlatforms);
-              }}
-            >
-              Select All Compatible
-            </Button>
-          </div>
 
-          <div className="space-y-3 max-h-[300px] overflow-y-auto">
-            {getConnectedPlatforms().map((platform) => {
-              const isCompatible = isPlatformCompatible(platform.id);
-              const isSelected = dialogPlatforms.includes(platform.id as InsertPost["platforms"][number]);
-              
-              return (
-                <label
-                  key={platform.id}
-                  className={cn(
-                    "flex items-center gap-3 p-2 rounded-md border cursor-pointer transition-colors",
-                    isSelected && "bg-accent",
-                    !isCompatible && "opacity-50 cursor-not-allowed"
-                  )}
-                >
-                  <Checkbox
-                    checked={isSelected}
-                    onCheckedChange={(checked) => {
-                      if (isCompatible) {
-                        setDialogPlatforms(prev =>
-                          checked
-                            ? [...prev, platform.id as InsertPost["platforms"][number]]
-                            : prev.filter(p => p !== platform.id)
-                        );
-                      }
-                    }}
-                    disabled={!isCompatible}
-                  />
-                  <div className="flex-1">
-                    <span className="text-sm font-medium">{platform.name}</span>
-                    {!isCompatible && (
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {platform.id === "youtube" && "Requires video file"}
-                        {platform.id === "instagram" && "Requires image or video"}
-                        {platform.id === "whatsapp" && "Requires media file"}
-                      </p>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+          <PostPlatformPreviewTabs
+            platformIds={dialogPlatforms}
+            content={form.watch("content")}
+            onContentChange={(v) => form.setValue("content", v, { shouldValidate: true, shouldDirty: true })}
+            mediaFiles={mediaFiles}
+            perPlatformCaptions={perPlatformCaptions}
+            onPerPlatformCaptionsChange={(v) => {
+              setPerPlatformCaptions(v);
+              if (!v) setDialogCaptionOverrides({});
+            }}
+            captionOverrides={dialogCaptionOverrides}
+            onCaptionOverrideChange={(platformId, value) => {
+              const base = form.getValues("content");
+              setDialogCaptionOverrides((prev) => {
+                const next = { ...prev };
+                if (!value.trim() || value === base) {
+                  delete next[platformId];
+                } else {
+                  next[platformId] = value;
+                }
+                return next;
+              });
+            }}
+          />
+
+          {dialogPlatformIssues.errors.length > 0 && (
+            <Alert variant="destructive" className="mt-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                <ul className="list-disc pl-4 space-y-1 text-sm">
+                  {dialogPlatformIssues.errors.map((e, i) => (
+                    <li key={i}>{e}</li>
+                  ))}
+                </ul>
+              </AlertDescription>
+            </Alert>
+          )}
+          {dialogPlatformIssues.warnings.length > 0 && dialogPlatformIssues.errors.length === 0 && (
+            <Alert className="mt-4 border-amber-500/40 bg-amber-500/5">
+              <AlertCircle className="h-4 w-4 text-amber-600" />
+              <AlertDescription>
+                <ul className="list-disc pl-4 space-y-1 text-sm text-amber-950 dark:text-amber-100">
+                  {dialogPlatformIssues.warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          <Separator className="my-6 bg-zinc-200/80" />
+
+          <div className="space-y-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-sm font-semibold text-zinc-900">Publish to</span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full sm:w-auto shrink-0"
+                onClick={() => {
+                  const connectedPlatforms = getConnectedPlatforms();
+                  const compatiblePlatforms = connectedPlatforms
+                    .filter((p) => isPlatformCompatible(p.id))
+                    .map((p) => p.id) as InsertPost["platforms"];
+                  setDialogPlatforms(compatiblePlatforms);
+                }}
+              >
+                Select all compatible
+              </Button>
+            </div>
+
+            <div className="space-y-2 max-h-[min(40vh,280px)] overflow-y-auto rounded-lg border border-zinc-200/80 bg-white p-2 shadow-inner">
+              {getConnectedPlatforms().map((platform) => {
+                const isCompatible = isPlatformCompatible(platform.id);
+                const isSelected = dialogPlatforms.includes(platform.id as InsertPost["platforms"][number]);
+
+                return (
+                  <label
+                    key={platform.id}
+                    className={cn(
+                      "flex items-center gap-3 rounded-md border bg-background p-2.5 transition-colors",
+                      isSelected && "border-primary/40 ring-1 ring-primary/15",
+                      !isCompatible && "cursor-not-allowed opacity-50",
+                      isCompatible && "cursor-pointer hover:bg-accent/50",
                     )}
-                  </div>
-                </label>
-              );
-            })}
+                  >
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={(checked) => {
+                        if (isCompatible) {
+                          setDialogPlatforms((prev) =>
+                            checked
+                              ? [...prev, platform.id as InsertPost["platforms"][number]]
+                              : prev.filter((p) => p !== platform.id),
+                          );
+                        }
+                      }}
+                      disabled={!isCompatible}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <span className="text-sm font-medium">{platform.name}</span>
+                      {!isCompatible && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {platform.id === "youtube" && "Requires video file"}
+                          {platform.id === "instagram" && "Requires image or video"}
+                          {platform.id === "whatsapp" && "Requires media file"}
+                        </p>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
           </div>
         </div>
 
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setShowConfirmDialog(false)}
-          >
+        <DialogFooter className="flex-col-reverse gap-2 border-t border-zinc-200/80 bg-white px-4 py-3 sm:flex-row sm:justify-end sm:px-6 sm:py-4">
+          <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => setShowConfirmDialog(false)}>
             Cancel
           </Button>
           <Button
             type="button"
+            className="w-full sm:w-auto"
             onClick={() => handleFinalSubmit(dialogPlatforms)}
-            disabled={dialogPlatforms.length === 0 || createPost.isPending}
+            disabled={
+              dialogPlatforms.length === 0 ||
+              createPost.isPending ||
+              dialogPlatformIssues.errors.length > 0
+            }
           >
-            {createPost.isPending && (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            )}
-            {dateTime ? "Schedule Post" : "Post Now"}
+            {createPost.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {dateTime ? "Schedule post" : "Post now"}
           </Button>
         </DialogFooter>
       </DialogContent>

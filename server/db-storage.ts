@@ -1,7 +1,7 @@
 import { eq, and, desc, sql, gte, lte, or, ne } from "drizzle-orm";
 import { db, schema } from "./db";
 import { IStorage, Subscription, InsertSubscription } from "./storage";
-import { User, InsertUser, Post, InsertPost, SocialAccount } from "@shared/schema";
+import { User, InsertUser, Post, InsertPost, SocialAccount, type AccessRequest } from "@shared/schema";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 import dotenv from "dotenv";
@@ -451,6 +451,20 @@ export class DbStorage implements IStorage {
     return result[0];
   }
 
+  async updateUserOpenRouterApiKey(userId: number, apiKey: string | null): Promise<User> {
+    const result = await db
+      .update(schema.users)
+      .set({
+        openrouterApiKey: apiKey,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.users.id, userId))
+      .returning();
+
+    if (result.length === 0) throw new Error("User not found");
+    return result[0];
+  }
+
   async getAllUsers(): Promise<User[]> {
     return await db
       .select()
@@ -613,6 +627,7 @@ export class DbStorage implements IStorage {
       .insert(schema.posts)
       .values({
         ...insertPost,
+        contentOverrides: insertPost.contentOverrides ?? {},
         userId,
         status: insertPost.status || (insertPost.scheduledTime ? "scheduled" : "draft"),
       })
@@ -777,6 +792,22 @@ export class DbStorage implements IStorage {
       .where(eq(schema.users.id, userId));
   }
 
+  async updateUserPackageTier(userId: number, packageTier: "basic" | "advance"): Promise<void> {
+    await db
+      .update(schema.users)
+      .set({ packageTier, updatedAt: new Date() })
+      .where(eq(schema.users.id, userId));
+  }
+
+  async downgradeAdvancePackageForStripeCustomer(stripeCustomerId: string): Promise<void> {
+    await db
+      .update(schema.users)
+      .set({ packageTier: "basic", updatedAt: new Date() })
+      .where(
+        and(eq(schema.users.stripeCustomerId, stripeCustomerId), eq(schema.users.packageTier, "advance"))
+      );
+  }
+
   async getUserPackage(userId: number): Promise<{ tier: string } | null> {
     const subscription = await this.getUserSubscription(userId);
     return subscription ? { tier: subscription.plan } : null;
@@ -816,6 +847,73 @@ export class DbStorage implements IStorage {
         postsUsed,
       });
     }
+  }
+
+  async createAccessRequest(data: {
+    email: string;
+    fullName: string;
+    company?: string | null;
+    message?: string | null;
+    packageTierRequested: "basic" | "advance";
+  }): Promise<AccessRequest> {
+    const [row] = await db
+      .insert(schema.accessRequests)
+      .values({
+        email: data.email,
+        fullName: data.fullName,
+        company: data.company ?? null,
+        message: data.message ?? null,
+        packageTierRequested: data.packageTierRequested,
+      })
+      .returning();
+    return row;
+  }
+
+  async listAccessRequests(status?: string): Promise<AccessRequest[]> {
+    if (status) {
+      return db
+        .select()
+        .from(schema.accessRequests)
+        .where(eq(schema.accessRequests.status, status))
+        .orderBy(desc(schema.accessRequests.createdAt));
+    }
+    return db
+      .select()
+      .from(schema.accessRequests)
+      .orderBy(desc(schema.accessRequests.createdAt));
+  }
+
+  async getAccessRequest(id: number): Promise<AccessRequest | undefined> {
+    const rows = await db
+      .select()
+      .from(schema.accessRequests)
+      .where(eq(schema.accessRequests.id, id))
+      .limit(1);
+    return rows[0];
+  }
+
+  async updateAccessRequest(
+    id: number,
+    data: { status: string; approvedUserId?: number | null }
+  ): Promise<AccessRequest> {
+    const patch: {
+      status: string;
+      updatedAt: Date;
+      approvedUserId?: number | null;
+    } = {
+      status: data.status,
+      updatedAt: new Date(),
+    };
+    if (data.approvedUserId !== undefined) {
+      patch.approvedUserId = data.approvedUserId;
+    }
+    const [row] = await db
+      .update(schema.accessRequests)
+      .set(patch)
+      .where(eq(schema.accessRequests.id, id))
+      .returning();
+    if (!row) throw new Error("Access request not found");
+    return row;
   }
 }
 

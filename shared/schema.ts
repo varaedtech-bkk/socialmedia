@@ -12,6 +12,7 @@ import {
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import { MAX_POST_CONTENT_CHARS, validateInsertPostPlatformRules } from "./platform-limits";
 
 export const users = pgTable(
   "users",
@@ -50,6 +51,12 @@ export const users = pgTable(
     whatsappUserProfile: json("whatsapp_user_profile").default(sql`null`),
     /** When set, Telegram bot commands map to this user after /connect + web login */
     telegramChatId: text("telegram_chat_id").default(sql`null`),
+    /** User's OpenRouter API key (BYOK); AI calls use this before optional platform OPENROUTER_API_KEY */
+    openrouterApiKey: text("openrouter_api_key").default(sql`null`),
+    /** Super admin must approve before login (invite / paid onboarding flow). */
+    isApproved: boolean("is_approved").notNull().default(true),
+    /** basic = dashboard/bot posting only; advance = AI drafts + OpenRouter bot features when a key exists */
+    packageTier: text("package_tier").notNull().default("basic"),
 
     isActive: boolean("is_active").default(true),
     isDeleted: boolean("is_deleted").default(false),  // New soft delete field
@@ -64,6 +71,27 @@ export const users = pgTable(
     usernameIdx: index("username_idx").on(table.username),
     emailIdx: index("email_idx").on(table.email),
     isActiveIdx: index("is_active_idx").on(table.isActive),  // New index
+  })
+);
+
+/** Prospective clients: purchase / interest → super admin notified → approve creates user */
+export const accessRequests = pgTable(
+  "access_requests",
+  {
+    id: serial("id").primaryKey(),
+    email: text("email").notNull(),
+    fullName: text("full_name").notNull().default(""),
+    company: text("company").default(sql`null`),
+    message: text("message").default(sql`null`),
+    packageTierRequested: text("package_tier_requested").notNull().default("basic"),
+    status: text("status").notNull().default("pending"),
+    approvedUserId: integer("approved_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    emailIdx: index("access_requests_email_idx").on(table.email),
+    statusIdx: index("access_requests_status_idx").on(table.status),
   })
 );
 
@@ -144,6 +172,11 @@ export const posts = pgTable(
     status: text("status").notNull().default("draft"),
     platforms: json("platforms").$type<string[]>().notNull().default(["facebook-page"]),
     mediaUrls: json("media_urls").$type<string[]>().notNull().default([]),
+    /** Optional per-platform caption; key = platform id. Empty/missing key uses `content`. */
+    contentOverrides: json("content_overrides")
+      .$type<Record<string, string>>()
+      .notNull()
+      .default({}),
     mediaType: text("media_type").default(sql`null`),
     analytics: json("analytics").$type<{
       impressions?: number;
@@ -246,7 +279,7 @@ export const insertUserSchema = createInsertSchema(users, {
 
 // Enhanced post schema with validation
 export const insertPostSchema = createInsertSchema(posts, {
-  content: z.string().min(1).max(5000),
+  content: z.string().min(1).max(MAX_POST_CONTENT_CHARS),
   platforms: z.array(platformEnum).min(1),
   mediaUrls: z.array(z.string().url()).max(10),
   mediaType: z.enum(["text", "image", "video", "pdf"]).default("text"),
@@ -259,6 +292,7 @@ export const insertPostSchema = createInsertSchema(posts, {
     shares: z.number().int().nonnegative().optional().default(0),
     comments: z.number().int().nonnegative().optional().default(0),
   }).default({}),
+  contentOverrides: z.record(z.string(), z.string().max(MAX_POST_CONTENT_CHARS)).optional(),
 }).pick({
   content: true,
   scheduledTime: true,
@@ -269,6 +303,41 @@ export const insertPostSchema = createInsertSchema(posts, {
   status: true,
   analytics: true,
   countedForQuota: true,
+  contentOverrides: true,
+}).superRefine((data, ctx) => {
+  const platforms = data.platforms as string[];
+  if (data.contentOverrides) {
+    for (const key of Object.keys(data.contentOverrides)) {
+      const parsed = platformEnum.safeParse(key);
+      if (!parsed.success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Invalid platform in caption overrides",
+          path: ["contentOverrides", key],
+        });
+        continue;
+      }
+      if (!platforms.includes(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Caption override platform must be included in post platforms",
+          path: ["contentOverrides", key],
+        });
+      }
+    }
+  }
+
+  for (const issue of validateInsertPostPlatformRules({
+    content: data.content,
+    platforms,
+    contentOverrides: data.contentOverrides,
+  })) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: issue.message,
+      path: issue.path as (string | number)[],
+    });
+  }
 });
 
 // Enhanced subscription schema
@@ -318,3 +387,7 @@ export type RateLimit = typeof platformRateLimits.$inferSelect;
 export type InsertRateLimit = z.infer<typeof insertRateLimitSchema>;
 export type AppSetting = typeof appSettings.$inferSelect;
 export type SocialAccount = typeof socialAccounts.$inferSelect;
+export type AccessRequest = typeof accessRequests.$inferSelect;
+
+export const packageTierEnum = z.enum(["basic", "advance"]);
+export type PackageTier = z.infer<typeof packageTierEnum>;

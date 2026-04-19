@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { appCard } from "@/lib/app-surface";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, Trash2, Star } from "lucide-react";
@@ -49,7 +50,7 @@ export default function ConnectedAccounts() {
 
   if (isLoading) {
     return (
-      <Card>
+      <Card className={appCard}>
         <CardContent className="pt-6 flex justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </CardContent>
@@ -59,9 +60,9 @@ export default function ConnectedAccounts() {
 
   if (!accounts.length) {
     return (
-      <Card>
+      <Card className={appCard}>
         <CardHeader>
-          <CardTitle className="text-lg">Connected pages &amp; accounts</CardTitle>
+          <CardTitle className="text-lg font-semibold text-zinc-900">Connected pages &amp; accounts</CardTitle>
           <CardDescription>
             Connect Facebook Page (or other platforms) below. Each connection is stored here so you can
             manage multiple pages and choose a default for posting.
@@ -72,9 +73,9 @@ export default function ConnectedAccounts() {
   }
 
   return (
-    <Card>
+    <Card className={appCard}>
       <CardHeader>
-        <CardTitle className="text-lg">Connected pages &amp; accounts</CardTitle>
+        <CardTitle className="text-lg font-semibold text-zinc-900">Connected pages &amp; accounts</CardTitle>
         <CardDescription>
           Default accounts are used when you post from the dashboard or Telegram. Use Telegram{" "}
           <code className="text-xs bg-muted px-1 rounded">/accounts</code> and{" "}

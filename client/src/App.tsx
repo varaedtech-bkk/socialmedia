@@ -9,16 +9,24 @@ import AuthPage from "@/pages/auth-page";
 import Dashboard from "@/pages/dashboard";
 import Analytics from "@/pages/analytics";
 import AdminPage from "@/pages/admin-page";
+import IntegrationsPage from "@/pages/integrations-page";
+import BillingPage from "@/pages/billing-page";
+import BillingSuccessPage from "@/pages/billing-success-page";
 import LandingPage from "@/pages/landing";
+import RequestAccessPage from "@/pages/request-access-page";
 
 function Router() {
   return (
     <Switch>
       <Route path="/" component={LandingPage} />
       <ProtectedRoute path="/app" component={Dashboard} />
+      <ProtectedRoute path="/integrations" component={IntegrationsPage} />
+      <ProtectedRoute path="/billing/success" component={BillingSuccessPage} />
+      <ProtectedRoute path="/billing" component={BillingPage} />
       <ProtectedRoute path="/analytics" component={Analytics} />
       <ProtectedRoute path="/admin" component={AdminPage} />
       <Route path="/auth" component={AuthPage} />
+      <Route path="/request-access" component={RequestAccessPage} />
       <Route component={NotFound} />
     </Switch>
   );

@@ -1,4 +1,4 @@
-import { User, InsertUser, Post, InsertPost, SocialAccount } from "@shared/schema";
+import { User, InsertUser, Post, InsertPost, SocialAccount, type AccessRequest } from "@shared/schema";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 
@@ -53,6 +53,9 @@ export interface IStorage {
   getUserPostCount(userId: number, month: number): Promise<number>;
   getUserPlatformPostsLastHour(userId: number, platform: string): Promise<number>;
   updateUserStripeId(userId: number, stripeId: string): Promise<void>;
+  updateUserPackageTier(userId: number, packageTier: "basic" | "advance"): Promise<void>;
+  /** When an Advance Stripe subscription ends, move linked users back to Basic. */
+  downgradeAdvancePackageForStripeCustomer(stripeCustomerId: string): Promise<void>;
   getUserPackage(userId: number): Promise<{ tier: string } | null>;
   updatePost(postId: number, updates: Partial<Post>): Promise<Post>;
 
@@ -127,6 +130,25 @@ export interface IStorage {
     userProfile: any
   ): Promise<User>;
 
+  updateUserOpenRouterApiKey(userId: number, apiKey: string | null): Promise<User>;
+
+  createAccessRequest(data: {
+    email: string;
+    fullName: string;
+    company?: string | null;
+    message?: string | null;
+    packageTierRequested: "basic" | "advance";
+  }): Promise<AccessRequest>;
+
+  listAccessRequests(status?: string): Promise<AccessRequest[]>;
+
+  getAccessRequest(id: number): Promise<AccessRequest | undefined>;
+
+  updateAccessRequest(
+    id: number,
+    data: { status: string; approvedUserId?: number | null }
+  ): Promise<AccessRequest>;
+
   getAllUsers(): Promise<User[]>;
 
   getUserByTelegramChatId(telegramChatId: string): Promise<User | undefined>;
@@ -173,6 +195,8 @@ export class MemStorage implements IStorage {
   private postCounts: Map<string, number>;
   private socialAccounts: SocialAccount[] = [];
   private socialAccountIdCounter = 1;
+  private accessRequests: AccessRequest[] = [];
+  private accessRequestIdCounter = 1;
   sessionStore: session.Store;
 
   constructor() {
@@ -295,6 +319,9 @@ export class MemStorage implements IStorage {
       whatsappPhoneNumberId: null,
       whatsappUserProfile: null,
       telegramChatId: null,
+      openrouterApiKey: null,
+      isApproved: (insertUser as Partial<User>).isApproved ?? true,
+      packageTier: (insertUser as Partial<User>).packageTier ?? "basic",
       stripeCustomerId: null,
       isActive: true,
       isDeleted: false,
@@ -478,6 +505,68 @@ export class MemStorage implements IStorage {
     return updatedUser;
   }
 
+  async updateUserOpenRouterApiKey(userId: number, apiKey: string | null): Promise<User> {
+    const user = await this.validateUser(userId);
+    const updatedUser = {
+      ...user,
+      openrouterApiKey: apiKey,
+      updatedAt: new Date(),
+    };
+    this.users.set(userId, updatedUser);
+    return updatedUser;
+  }
+
+  async createAccessRequest(data: {
+    email: string;
+    fullName: string;
+    company?: string | null;
+    message?: string | null;
+    packageTierRequested: "basic" | "advance";
+  }): Promise<AccessRequest> {
+    const now = new Date();
+    const row: AccessRequest = {
+      id: this.accessRequestIdCounter++,
+      email: data.email,
+      fullName: data.fullName,
+      company: data.company ?? null,
+      message: data.message ?? null,
+      packageTierRequested: data.packageTierRequested,
+      status: "pending",
+      approvedUserId: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.accessRequests.push(row);
+    return row;
+  }
+
+  async listAccessRequests(status?: string): Promise<AccessRequest[]> {
+    if (!status) return [...this.accessRequests].sort((a, b) => b.id - a.id);
+    return this.accessRequests.filter((r) => r.status === status).sort((a, b) => b.id - a.id);
+  }
+
+  async getAccessRequest(id: number): Promise<AccessRequest | undefined> {
+    return this.accessRequests.find((r) => r.id === id);
+  }
+
+  async updateAccessRequest(
+    id: number,
+    data: { status: string; approvedUserId?: number | null }
+  ): Promise<AccessRequest> {
+    const idx = this.accessRequests.findIndex((r) => r.id === id);
+    if (idx < 0) throw new Error("Access request not found");
+    const prev = this.accessRequests[idx]!;
+    const next: AccessRequest = {
+      ...prev,
+      status: data.status,
+      approvedUserId:
+        data.approvedUserId === undefined ? prev.approvedUserId : data.approvedUserId,
+      updatedAt: new Date(),
+    };
+    this.accessRequests[idx] = next;
+    return next;
+  }
+
   async getAllUsers(): Promise<User[]> {
     return Array.from(this.users.values());
   }
@@ -601,6 +690,7 @@ async createPost(userId: number, insertPost: InsertPost): Promise<Post> {
     platforms: insertPost.platforms ?? [],
     mediaUrls: insertPost.mediaUrls ?? [],
     mediaType: insertPost.mediaType ?? null,
+    contentOverrides: insertPost.contentOverrides ?? {},
     countedForQuota: insertPost.countedForQuota ?? false,
     isDeleted: false,  // Initialize soft delete fields
     deletedAt: null    // Initialize soft delete fields
@@ -730,6 +820,19 @@ async createPost(userId: number, insertPost: InsertPost): Promise<Post> {
   async updateUserStripeId(userId: number, stripeId: string): Promise<void> {
     const user = await this.validateUser(userId);
     this.users.set(userId, { ...user, stripeCustomerId: stripeId });
+  }
+
+  async updateUserPackageTier(userId: number, packageTier: "basic" | "advance"): Promise<void> {
+    const user = await this.validateUser(userId);
+    this.users.set(userId, { ...user, packageTier, updatedAt: new Date() });
+  }
+
+  async downgradeAdvancePackageForStripeCustomer(stripeCustomerId: string): Promise<void> {
+    for (const [id, user] of this.users.entries()) {
+      if (user.stripeCustomerId === stripeCustomerId && user.packageTier === "advance") {
+        this.users.set(id, { ...user, packageTier: "basic", updatedAt: new Date() });
+      }
+    }
   }
 
   async getUserPackage(userId: number): Promise<{ tier: string } | null> {

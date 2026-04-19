@@ -1,13 +1,11 @@
 import type { Express } from "express";
+import rateLimit from "express-rate-limit";
 import { createServer, type Server } from "http";
 import { setupAuth } from "./auth";
 import { storage } from "./storage";
 import { z } from "zod";
 import multer from "multer";
 import path from "path";
-import { getSubscription, createSubscription } from '../client/src/lib/types/subscription';
-import { handleStripeWebhook } from '../client/src/lib/types/webhooks';
-
 import bodyParser from 'body-parser';
 import fsp from "fs/promises"; // fs/promises for other operations
 
@@ -18,6 +16,11 @@ import { initializeScheduledPosts, schedulePost } from "./schedulePost";
 import { publishPost } from "./publishPost";
 import { removePublishedPostFromPlatforms } from "./remotePostDelete";
 import { insertPostSchema } from "@shared/schema";
+import {
+  MAX_POST_CONTENT_CHARS,
+  validateInsertPostPlatformRules,
+  validateMediaFilesForPlatforms,
+} from "@shared/platform-limits";
 import { checkPostQuota } from "@/lib/postQuota";
 import { checkPlatformRateLimit } from "@/lib/rateLimiter";
 import { 
@@ -27,7 +30,20 @@ import {
 import { getN8nIntegrationStatus, triggerN8nWorkflow } from "./n8n";
 import { registerTelegramRoutes } from "./routes-telegram";
 import { verifyTelegramBindToken } from "./telegram-link";
-import { openRouterRequestHeaders } from "./openrouter-headers";
+import {
+  getOpenRouterApiKey,
+  maskOpenRouterApiKeyHint,
+  normalizeOpenRouterApiKey,
+  openRouterRequestHeaders,
+  resolveOpenRouterApiKeyForUser,
+} from "./openrouter-headers";
+import { userHasAdvanceAiEntitlement } from "./user-capabilities";
+import {
+  advanceStripeConfigured,
+  createAdvanceCheckoutSession,
+  verifyAdvanceCheckoutSession,
+} from "./stripe-advance";
+import { notifySuperAdmin } from "./notify-super-admin";
 
 /** Log errors with context for debugging; captures message, stack, and axios response when present */
 function logError(context: string, error: unknown, extra?: Record<string, unknown>): void {
@@ -73,6 +89,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use(bodyParser.urlencoded({ extended: true }));
   // Make sure uploads directory exists
   await fsp.mkdir("./uploads", { recursive: true });
+
+  const accessRequestLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 8,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many access requests from this IP. Try again later." },
+  });
+
+  app.get("/api/public-config", (_req, res) => {
+    const publicRegistrationEnabled =
+      process.env.ALLOW_PUBLIC_REGISTRATION === "true" ||
+      isFeatureEnabled(FEATURE_KEYS.PUBLIC_REGISTRATION_ENABLED);
+    res.json({ publicRegistrationEnabled });
+  });
+
+  app.post("/api/access-request", accessRequestLimiter, async (req, res) => {
+    try {
+      const raw = req.body as Record<string, unknown>;
+      if (typeof raw.website === "string" && raw.website.length > 0) {
+        return res.status(400).json({ error: "Invalid request" });
+      }
+
+      const body = z
+        .object({
+          email: z.string().email(),
+          fullName: z.string().min(1).max(120),
+          company: z.string().max(200).optional(),
+          message: z.string().max(2000).optional(),
+          packageTier: z.enum(["basic", "advance"]),
+        })
+        .strip()
+        .parse(req.body);
+
+      const row = await storage.createAccessRequest({
+        email: body.email,
+        fullName: body.fullName,
+        company: body.company,
+        message: body.message,
+        packageTierRequested: body.packageTier,
+      });
+
+      await notifySuperAdmin(
+        `[${process.env.OPENROUTER_APP_TITLE || "MultiSocial"}] New access request`,
+        [
+          `Email: ${row.email}`,
+          `Name: ${row.fullName}`,
+          `Company: ${row.company || "—"}`,
+          `Plan requested: ${row.packageTierRequested}`,
+          `Message: ${row.message || "—"}`,
+          `Request ID: ${row.id}`,
+          `Approve in Admin → Access requests.`,
+        ].join("\n")
+      );
+
+      return res.status(201).json({ ok: true, id: row.id });
+    } catch (e) {
+      if (e instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid request", details: e.flatten() });
+      }
+      logError("access-request", e);
+      return res.status(500).json({ error: "Could not submit request" });
+    }
+  });
 
   app.get("/api/auth/:platform", async (req, res) => {
     const { platform } = req.params;
@@ -786,36 +866,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Subscription routes (only if feature is enabled)
-  app.post('/api/subscription', async (req, res) => {
-    if (!isFeatureEnabled(FEATURE_KEYS.SUBSCRIPTIONS_ENABLED)) {
-      return res.status(403).json({ 
-        error: "Subscriptions are currently disabled",
-        featureDisabled: true 
-      });
-    }
-    // Check Stripe payments if subscription requires payment
-    if (!isFeatureEnabled(FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED)) {
-      return res.status(403).json({ 
-        error: "Payment processing is currently disabled",
-        featureDisabled: true 
-      });
-    }
-    return createSubscription(req, res);
+  app.get("/api/billing/config", (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    res.json({
+      advanceCheckoutAvailable:
+        isFeatureEnabled(FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED) && advanceStripeConfigured(),
+    });
   });
-  
-  app.post('/api/webhooks/stripe', 
-    bodyParser.raw({ type: 'application/json' }),
-    async (req, res) => {
-      if (!isFeatureEnabled(FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED)) {
-        return res.status(403).json({ 
-          error: "Payment processing is currently disabled",
-          featureDisabled: true 
-        });
-      }
-      return handleStripeWebhook(req, res);
-    }
-  );
+
+  app.post("/api/billing/checkout-advance", (req, res) => {
+    void createAdvanceCheckoutSession(req, res);
+  });
+
+  app.get("/api/billing/session-status", (req, res) => {
+    void verifyAdvanceCheckoutSession(req, res);
+  });
 
   app.get("/api/integrations/n8n/status", (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
@@ -861,11 +926,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     try {
+      if (!userHasAdvanceAiEntitlement(dbUser)) {
+        return res.status(403).json({
+          error:
+            "AI drafts are included only on the Advance plan. Your account is on Basic (dashboard and bot posting without AI). Ask a super admin to set your package to Advance.",
+        });
+      }
+
       const { prompt, platforms, tone } = schema.parse(req.body);
-      const apiKey = process.env.OPENROUTER_API_KEY;
+      const apiKey = resolveOpenRouterApiKeyForUser(dbUser);
       if (!apiKey) {
         return res.status(400).json({
-          error: "OPENROUTER_API_KEY is not configured",
+          error:
+            "Advance AI needs an OpenRouter API key. Add yours under Integrations, or set OPENROUTER_API_KEY on the server for a shared key.",
         });
       }
 
@@ -904,10 +977,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
         const msgLower = String(rawMsg).toLowerCase();
         if (response.status === 401 || msgLower.includes("user not found")) {
-          return res.status(400).json({
-            error:
-              "OpenRouter rejected the request (invalid or expired API key, or key restrictions). Create a new key at https://openrouter.ai/keys and set OPENROUTER_API_KEY on the server. Set CLIENT_URL or BASE_URL to your public site URL for the HTTP-Referer header.",
-          });
+          const hint = dbUser.openrouterApiKey
+            ? "Your Integrations OpenRouter key was rejected (invalid, expired, or restricted). Replace it at https://openrouter.ai/keys."
+            : "OpenRouter rejected the platform key. Set OPENROUTER_API_KEY on the server or add your own key under Integrations. Set CLIENT_URL or BASE_URL for the HTTP-Referer header.";
+          return res.status(400).json({ error: hint });
         }
         throw new Error(rawMsg);
       }
@@ -919,6 +992,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       logError("AI post generation", error, { userId: req.user?.id });
       return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  app.get("/api/integrations/openrouter", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    const user = await storage.getUser(req.user!.id);
+    if (!user) return res.sendStatus(401);
+    const raw = user.openrouterApiKey;
+    const normalized = raw ? normalizeOpenRouterApiKey(raw) : "";
+    const hasUserKey = Boolean(normalized);
+    const platformFallback = Boolean(getOpenRouterApiKey());
+    return res.json({
+      hasUserKey,
+      maskedKey: hasUserKey && raw ? maskOpenRouterApiKeyHint(raw) : null,
+      fallbackFromPlatform: !hasUserKey && platformFallback,
+    });
+  });
+
+  app.put("/api/integrations/openrouter", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    try {
+      const parsed = z
+        .object({
+          apiKey: z.string().min(16).max(512).optional(),
+          clear: z.literal(true).optional(),
+        })
+        .strict()
+        .parse(req.body);
+
+      if (parsed.clear === true) {
+        await storage.updateUserOpenRouterApiKey(req.user!.id, null);
+        return res.json({ ok: true });
+      }
+      if (parsed.apiKey !== undefined) {
+        const normalized = normalizeOpenRouterApiKey(parsed.apiKey);
+        if (!normalized) {
+          return res.status(400).json({ error: "API key is empty after trimming" });
+        }
+        await storage.updateUserOpenRouterApiKey(req.user!.id, normalized);
+        return res.json({ ok: true });
+      }
+      return res.status(400).json({
+        error: 'Send a JSON body with either { "apiKey": "<your key>" } or { "clear": true }',
+      });
+    } catch (e) {
+      if (e instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid request body" });
+      }
+      logError("OpenRouter integration update", e, { userId: req.user?.id });
+      return res.status(400).json({ error: (e as Error).message });
     }
   });
 
@@ -1018,6 +1141,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
 
 
+      let contentOverrides: Record<string, string> = {};
+      const rawOverrides = req.body.contentOverrides;
+      if (typeof rawOverrides === "string" && rawOverrides.trim()) {
+        try {
+          const parsed = JSON.parse(rawOverrides) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            for (const p of validatedPlatforms) {
+              const v = (parsed as Record<string, unknown>)[p];
+              if (typeof v === "string" && v.trim().length > 0) {
+                contentOverrides[p] = v.slice(0, MAX_POST_CONTENT_CHARS);
+              }
+            }
+          }
+        } catch {
+          contentOverrides = {};
+        }
+      }
+
+      const captionIssues = validateInsertPostPlatformRules({
+        content: content as string,
+        platforms: validatedPlatforms,
+        contentOverrides,
+      });
+      if (captionIssues.length > 0) {
+        return res.status(400).json({ error: captionIssues.map((i) => i.message).join(" ") });
+      }
+
+      if (files.length > 0) {
+        const { errors: mediaErrs } = validateMediaFilesForPlatforms({
+          files: files.map((f) => ({ size: f.size, mimetype: f.mimetype })),
+          platforms: validatedPlatforms,
+        });
+        if (mediaErrs.length > 0) {
+          return res.status(400).json({ error: mediaErrs.join(" ") });
+        }
+      }
+
       // Create the post with UTC scheduledTime
       const post = await storage.createPost(user.id, {
         content: content as string,
@@ -1034,6 +1194,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           shares: 0,
           comments: 0,
         },
+        contentOverrides,
       });
   
       // If the post is scheduled, create a cron job
@@ -1141,6 +1302,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     
     // If subscriptions are disabled, return unlimited/default values
     if (!isFeatureEnabled(FEATURE_KEYS.SUBSCRIPTIONS_ENABLED)) {
+      const u = await storage.getUser(req.user!.id);
       return res.json({
         plan: 'free',
         status: 'active',
@@ -1148,17 +1310,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         posts_used: 0,
         posts_limit: Infinity, // Unlimited when feature is disabled
         featureDisabled: true,
+        packageTier: u?.packageTier ?? "basic",
+        advanceCheckoutAvailable:
+          isFeatureEnabled(FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED) && advanceStripeConfigured(),
       });
     }
     
     try {
       const subscription = await storage.getUserSubscription(req.user!.id);
+      const u = await storage.getUser(req.user!.id);
       res.json({
         plan: subscription?.plan || 'free',
         status: subscription?.status || 'inactive',
         current_period_end: subscription?.periodEnd || 0,
         posts_used: subscription?.postsUsed || 0,
         posts_limit: subscription?.postsLimit || 5, // Default free tier limit
+        packageTier: u?.packageTier ?? "basic",
+        advanceCheckoutAvailable:
+          isFeatureEnabled(FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED) && advanceStripeConfigured(),
       });
     } catch (error) {
       logError("Subscription fetch", error, { userId: req.user?.id });

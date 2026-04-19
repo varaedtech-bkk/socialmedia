@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { appCard } from "@/lib/app-surface";
 import {
   SiFacebook,
   SiLinkedin,
@@ -118,9 +119,9 @@ export default function SocialConnect() {
   };
 
   return (
-    <Card>
+    <Card className={appCard}>
       <CardHeader>
-        <CardTitle>Connect Social Media Accounts</CardTitle>
+        <CardTitle className="text-lg font-semibold text-zinc-900">Connect Social Media Accounts</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Facebook Page */}

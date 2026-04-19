@@ -13,6 +13,8 @@ export const FEATURE_KEYS = {
   SUBSCRIPTIONS_ENABLED: "subscriptions_enabled",
   POST_QUOTA_ENABLED: "post_quota_enabled",
   STRIPE_PAYMENTS_ENABLED: "stripe_payments_enabled",
+  /** When false, POST /api/register is rejected (super admin onboards users). */
+  PUBLIC_REGISTRATION_ENABLED: "public_registration_enabled",
 } as const;
 
 // Default feature values
@@ -20,6 +22,7 @@ const DEFAULT_FEATURES = {
   [FEATURE_KEYS.SUBSCRIPTIONS_ENABLED]: true,
   [FEATURE_KEYS.POST_QUOTA_ENABLED]: true,
   [FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED]: true,
+  [FEATURE_KEYS.PUBLIC_REGISTRATION_ENABLED]: false,
 } as const;
 
 // In-memory cache for feature flags (refreshed on update)
@@ -68,6 +71,8 @@ function getFeatureDescription(key: string): string {
     [FEATURE_KEYS.SUBSCRIPTIONS_ENABLED]: "Enable/disable subscription plans and tier management",
     [FEATURE_KEYS.POST_QUOTA_ENABLED]: "Enable/disable post quota limits based on subscription tiers",
     [FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED]: "Enable/disable Stripe payment processing",
+    [FEATURE_KEYS.PUBLIC_REGISTRATION_ENABLED]:
+      "Allow anyone to self-register. When off, only super admins create accounts (recommended for B2B).",
   };
   return descriptions[key] || "Feature flag";
 }

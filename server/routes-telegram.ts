@@ -5,7 +5,11 @@ import { storage } from "./storage";
 import { publishPost } from "./publishPost";
 import { formatRemoteDeleteReply, removePublishedPostFromPlatforms } from "./remotePostDelete";
 import { createTelegramBindToken } from "./telegram-link";
-import { openRouterRequestHeaders } from "./openrouter-headers";
+import {
+  openRouterRequestHeaders,
+  resolveOpenRouterApiKeyForUser,
+} from "./openrouter-headers";
+import { userHasAdvanceAiEntitlement } from "./user-capabilities";
 import type { Platform, User } from "@shared/schema";
 
 function getRequiredEnv(name: string): string {
@@ -56,7 +60,7 @@ function getHelpText(): string {
     "/status — Link + connection summary",
     "/myposts [n] — Latest posts (max 10)",
     "/deletepost <id> — Delete your post",
-    "/ai <prompt> — AI draft (OpenRouter)",
+    "/ai <prompt> — AI draft (your OpenRouter key from Integrations, or platform key)",
     "/help — This list",
   ].join("\n");
 }
@@ -171,6 +175,7 @@ async function createAndPublishPost(
     timezone: "UTC",
     status: "draft",
     analytics: { impressions: 0, clicks: 0, likes: 0, shares: 0, comments: 0 },
+    contentOverrides: {},
   });
 
   if (publishNow) {
@@ -221,9 +226,13 @@ async function saveTelegramPhotoToUpload(photo: { file_id: string }[]): Promise<
   return `/uploads/${name}`;
 }
 
-async function generateWithAi(prompt: string): Promise<string> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured");
+async function generateWithAi(prompt: string, user: User): Promise<string> {
+  const apiKey = resolveOpenRouterApiKeyForUser(user);
+  if (!apiKey) {
+    throw new Error(
+      "No OpenRouter key: add your API key in the web app under Integrations, or set OPENROUTER_API_KEY on the server."
+    );
+  }
   const model = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -241,9 +250,10 @@ async function generateWithAi(prompt: string): Promise<string> {
   if (!response.ok) {
     const raw = result?.error?.message || "AI generation failed";
     if (response.status === 401 || String(raw).toLowerCase().includes("user not found")) {
-      throw new Error(
-        "OpenRouter rejected the request. Set OPENROUTER_API_KEY, CLIENT_URL or BASE_URL, and optionally OPENROUTER_APP_TITLE on the server."
-      );
+      const hint = user.openrouterApiKey
+        ? "OpenRouter rejected your API key. Update it in the web app: Integrations."
+        : "OpenRouter rejected the platform key. Set OPENROUTER_API_KEY on the server or add your key under Integrations.";
+      throw new Error(hint);
     }
     throw new Error(raw);
   }
@@ -348,7 +358,7 @@ export function registerTelegramRoutes(app: Express): void {
         const url = `${base}/auth?telegram_bind=${encodeURIComponent(token)}`;
         await sendTelegramMessage(
           chatId,
-          `Open this link in your browser, log in (or register), and your Telegram will be linked to that account:\n\n${url}\n\nThen use /fb, /post, /broadcast, or photo + /igpost.`
+          `Open this link in your browser, log in with the account your admin created, and your Telegram will be linked:\n\n${url}\n\nThen use /fb, /post, /broadcast, or photo + /igpost.`
         );
         return res.sendStatus(200);
       }
@@ -516,7 +526,22 @@ export function registerTelegramRoutes(app: Express): void {
           await sendTelegramMessage(chatId, "Usage: /ai <prompt>");
           return res.sendStatus(200);
         }
-        const aiText = await generateWithAi(prompt);
+        const user = await resolveTelegramUser(chatId);
+        if (!userHasAdvanceAiEntitlement(user)) {
+          await sendTelegramMessage(
+            chatId,
+            "AI commands need an Advance package. You can still post with /fb, /li, /post, etc. Contact your administrator to upgrade."
+          );
+          return res.sendStatus(200);
+        }
+        if (!resolveOpenRouterApiKeyForUser(user)) {
+          await sendTelegramMessage(
+            chatId,
+            "Add your OpenRouter API key in the web app: Integrations (Advance plan), then try /ai again."
+          );
+          return res.sendStatus(200);
+        }
+        const aiText = await generateWithAi(prompt, user);
         await sendTelegramMessage(chatId, `AI draft:\n\n${aiText}`);
         return res.sendStatus(200);
       }

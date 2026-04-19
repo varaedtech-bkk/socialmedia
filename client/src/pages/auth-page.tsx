@@ -1,6 +1,7 @@
 import { useAuth } from "@/hooks/use-auth";
-import { useLocation } from "wouter";
+import { useLocation, Link } from "wouter";
 import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,17 @@ const TELEGRAM_BIND_STORAGE = "telegram_bind_token_pending";
 export default function AuthPage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+
+  const { data: publicConfig } = useQuery({
+    queryKey: ["public-config"],
+    queryFn: async () => {
+      const res = await fetch("/api/public-config");
+      if (!res.ok) return { publicRegistrationEnabled: false };
+      return res.json() as { publicRegistrationEnabled: boolean };
+    },
+    staleTime: 60_000,
+  });
+  const allowRegister = publicConfig?.publicRegistrationEnabled === true;
 
   // Safely get auth context - useAuth now handles missing provider gracefully
   const auth = useAuth();
@@ -99,18 +111,29 @@ export default function AuthPage() {
           </CardHeader>
           <CardContent>
             <Tabs defaultValue="login">
-              <TabsList className="grid w-full grid-cols-2">
+              <TabsList className={`grid w-full ${allowRegister ? "grid-cols-2" : "grid-cols-1"}`}>
                 <TabsTrigger value="login">Login</TabsTrigger>
-                <TabsTrigger value="register">Register</TabsTrigger>
+                {allowRegister ? <TabsTrigger value="register">Register</TabsTrigger> : null}
               </TabsList>
 
               <TabsContent value="login">
                 <LoginForm />
+                {!allowRegister && (
+                  <p className="text-sm text-muted-foreground mt-4">
+                    Accounts are created by your organization after purchase or approval.{" "}
+                    <Link href="/request-access" className="text-primary underline-offset-4 hover:underline">
+                      Request access
+                    </Link>
+                    .
+                  </p>
+                )}
               </TabsContent>
 
-              <TabsContent value="register">
-                <RegisterForm />
-              </TabsContent>
+              {allowRegister ? (
+                <TabsContent value="register">
+                  <RegisterForm />
+                </TabsContent>
+              ) : null}
             </Tabs>
           </CardContent>
         </Card>

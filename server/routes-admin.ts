@@ -19,9 +19,16 @@ import {
   ROLE_CONFIG,
   getUserPermissions,
   getAvailableFeatures,
+  getAssignableRoles,
   type UserRole,
 } from "./admin-config";
 import { hashPassword } from "./auth";
+import { sanitizeUserForClient } from "./sanitize-user";
+import {
+  getSuperAdminNotifyEmailSource,
+  setSuperAdminNotifyEmail,
+} from "./notification-config";
+import { isSmtpConfigured } from "./smtp-send";
 
 export function registerAdminRoutes(app: Express) {
   // ==================== User Management ====================
@@ -63,6 +70,8 @@ export function registerAdminRoutes(app: Express) {
             permissions: schema.users.permissions,
             isActive: schema.users.isActive,
             isDeleted: schema.users.isDeleted,
+            isApproved: schema.users.isApproved,
+            packageTier: schema.users.packageTier,
             createdAt: schema.users.createdAt,
             updatedAt: schema.users.updatedAt,
           })
@@ -115,13 +124,7 @@ export function registerAdminRoutes(app: Express) {
           return res.status(404).json({ error: "User not found" });
         }
 
-        // Remove password from response
-        const { password: _, ...userWithoutPassword } = user;
-
-        res.json({
-          ...userWithoutPassword,
-          permissions: user.permissions || [],
-        });
+        res.json(sanitizeUserForClient(user));
       } catch (error) {
         console.error("Error fetching user:", error);
         res.status(500).json({ error: "Failed to fetch user" });
@@ -145,6 +148,8 @@ export function registerAdminRoutes(app: Express) {
             password: z.string().min(8),
             role: z.enum(["user", "admin", "super_admin"]).optional(),
             permissions: z.array(z.string()).optional(),
+            isApproved: z.boolean().optional(),
+            packageTier: z.enum(["basic", "advance"]).optional(),
           })
           .parse(req.body);
 
@@ -162,14 +167,11 @@ export function registerAdminRoutes(app: Express) {
           password: hashedPassword,
           role: (body.role || "user") as UserRole,
           permissions: body.permissions || [],
+          isApproved: body.isApproved ?? true,
+          packageTier: body.packageTier ?? "basic",
         } as any);
 
-        const { password: _, ...userWithoutPassword } = user;
-
-        res.status(201).json({
-          ...userWithoutPassword,
-          permissions: user.permissions || [],
-        });
+        res.status(201).json(sanitizeUserForClient(user));
       } catch (error) {
         console.error("Error creating user:", error);
         if (error instanceof z.ZodError) {
@@ -196,6 +198,8 @@ export function registerAdminRoutes(app: Express) {
             role: z.enum(["user", "admin", "super_admin"]).optional(),
             permissions: z.array(z.string()).optional(),
             isActive: z.boolean().optional(),
+            isApproved: z.boolean().optional(),
+            packageTier: z.enum(["basic", "advance"]).optional(),
           })
           .parse(req.body);
 
@@ -213,6 +217,8 @@ export function registerAdminRoutes(app: Express) {
         if (body.role) updates.role = body.role;
         if (body.permissions !== undefined) updates.permissions = body.permissions;
         if (body.isActive !== undefined) updates.isActive = body.isActive;
+        if (body.isApproved !== undefined) updates.isApproved = body.isApproved;
+        if (body.packageTier !== undefined) updates.packageTier = body.packageTier;
 
         await db
           .update(schema.users)
@@ -220,12 +226,7 @@ export function registerAdminRoutes(app: Express) {
           .where(eq(schema.users.id, userId));
 
         const updatedUser = await storage.getUser(userId);
-        const { password: _, ...userWithoutPassword } = updatedUser!;
-
-        res.json({
-          ...userWithoutPassword,
-          permissions: updatedUser!.permissions || [],
-        });
+        res.json(sanitizeUserForClient(updatedUser!));
       } catch (error) {
         console.error("Error updating user:", error);
         if (error instanceof z.ZodError) {
@@ -382,11 +383,21 @@ export function registerAdminRoutes(app: Express) {
           .where(eq(schema.users.isDeleted, false))
           .groupBy(schema.users.role);
 
+        const packageTierDistribution = await db
+          .select({
+            packageTier: schema.users.packageTier,
+            count: count(),
+          })
+          .from(schema.users)
+          .where(eq(schema.users.isDeleted, false))
+          .groupBy(schema.users.packageTier);
+
         res.json({
           users: {
             total: totalUsers[0]?.count || 0,
             active: activeUsers[0]?.count || 0,
             roles: roleDistribution,
+            packageTiers: packageTierDistribution,
           },
           posts: {
             total: totalPosts[0]?.count || 0,
@@ -401,6 +412,153 @@ export function registerAdminRoutes(app: Express) {
       } catch (error) {
         console.error("Error fetching statistics:", error);
         res.status(500).json({ error: "Failed to fetch statistics" });
+      }
+    }
+  );
+
+  app.get(
+    "/api/admin/access-requests",
+    requirePermission("users.view"),
+    async (req, res) => {
+      try {
+        const status = typeof req.query.status === "string" ? req.query.status : undefined;
+        const requests = await storage.listAccessRequests(status);
+        res.json({ requests });
+      } catch (error) {
+        console.error("Error listing access requests:", error);
+        res.status(500).json({ error: "Failed to list requests" });
+      }
+    }
+  );
+
+  app.post(
+    "/api/admin/access-requests/:id/approve",
+    requirePermission("users.create"),
+    async (req, res) => {
+      try {
+        const id = parseInt(req.params.id, 10);
+        if (!Number.isFinite(id)) {
+          return res.status(400).json({ error: "Invalid id" });
+        }
+        const body = z
+          .object({
+            username: z.string().min(3).max(30),
+            password: z.string().min(8),
+            packageTier: z.enum(["basic", "advance"]),
+            role: z.enum(["user", "admin", "super_admin"]).optional(),
+          })
+          .parse(req.body);
+
+        const row = await storage.getAccessRequest(id);
+        if (!row) {
+          return res.status(404).json({ error: "Request not found" });
+        }
+        if (row.status !== "pending") {
+          return res.status(400).json({ error: "Request is not pending" });
+        }
+
+        const existingUser = await storage.getUserByUsername(body.username);
+        if (existingUser) {
+          return res.status(400).json({ error: "Username already exists" });
+        }
+
+        const hashedPassword = await hashPassword(body.password);
+        const user = await storage.createUser({
+          username: body.username,
+          email: row.email,
+          password: hashedPassword,
+          role: (body.role || "user") as UserRole,
+          permissions: [],
+          isApproved: true,
+          packageTier: body.packageTier,
+        } as any);
+
+        await storage.updateAccessRequest(id, {
+          status: "approved",
+          approvedUserId: user.id,
+        });
+
+        res.status(201).json({
+          user: sanitizeUserForClient(user),
+          message: "User created and request marked approved.",
+        });
+      } catch (error) {
+        console.error("Error approving access request:", error);
+        if (error instanceof z.ZodError) {
+          return res.status(400).json({ error: error.errors });
+        }
+        res.status(500).json({ error: (error as Error).message || "Failed to approve request" });
+      }
+    }
+  );
+
+  app.post(
+    "/api/admin/access-requests/:id/reject",
+    requirePermission("users.edit"),
+    async (req, res) => {
+      try {
+        const id = parseInt(req.params.id, 10);
+        if (!Number.isFinite(id)) {
+          return res.status(400).json({ error: "Invalid id" });
+        }
+        const row = await storage.getAccessRequest(id);
+        if (!row) {
+          return res.status(404).json({ error: "Request not found" });
+        }
+        if (row.status !== "pending") {
+          return res.status(400).json({ error: "Request is not pending" });
+        }
+        await storage.updateAccessRequest(id, { status: "rejected" });
+        res.json({ ok: true });
+      } catch (error) {
+        console.error("Error rejecting access request:", error);
+        res.status(500).json({ error: "Failed to reject request" });
+      }
+    }
+  );
+
+  app.get(
+    "/api/admin/notification-settings",
+    requirePermission("settings.view"),
+    async (_req, res) => {
+      try {
+        const { storedEmail, effectiveEmail } = await getSuperAdminNotifyEmailSource();
+        res.json({
+          superAdminEmail: storedEmail,
+          effectiveRecipient: effectiveEmail,
+          smtpConfigured: isSmtpConfigured(),
+          envSuperAdminConfigured: Boolean(process.env.SUPER_ADMIN_EMAIL?.trim()),
+        });
+      } catch (error) {
+        console.error("notification-settings GET", error);
+        res.status(500).json({ error: "Failed to load notification settings" });
+      }
+    }
+  );
+
+  app.put(
+    "/api/admin/notification-settings",
+    requirePermission("settings.edit"),
+    async (req, res) => {
+      try {
+        const body = z
+          .object({
+            superAdminEmail: z.union([z.string().email(), z.literal("")]),
+          })
+          .parse(req.body);
+        await setSuperAdminNotifyEmail(body.superAdminEmail, req.user!.id);
+        const { storedEmail, effectiveEmail } = await getSuperAdminNotifyEmailSource();
+        res.json({
+          ok: true,
+          superAdminEmail: storedEmail,
+          effectiveRecipient: effectiveEmail,
+        });
+      } catch (error) {
+        console.error("notification-settings PUT", error);
+        if (error instanceof z.ZodError) {
+          return res.status(400).json({ error: "Invalid email" });
+        }
+        res.status(500).json({ error: "Failed to save" });
       }
     }
   );
@@ -427,6 +585,7 @@ export function registerAdminRoutes(app: Express) {
           availableFeatures,
           userPermissions: permissions,
           userRole: role,
+          assignableRoles: getAssignableRoles(role),
         });
       } catch (error) {
         console.error("Error fetching admin config:", error);

@@ -4,17 +4,25 @@ import {
   useMutation,
   UseMutationResult,
 } from "@tanstack/react-query";
-import { insertUserSchema, User as SelectUser, InsertUser } from "@shared/schema";
+import { User as SelectUser, InsertUser } from "@shared/schema";
 import { getQueryFn, apiRequest, queryClient } from "../lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
+/** API user payload (password never present; includes capability flags from /api/user). */
+export type SessionUser = Omit<SelectUser, "password"> & {
+  capabilities?: {
+    aiGeneration: boolean;
+    packageTier: "basic" | "advance";
+  };
+};
+
 type AuthContextType = {
-  user: SelectUser | null;
+  user: SessionUser | null;
   isLoading: boolean;
   error: Error | null;
-  loginMutation: UseMutationResult<SelectUser, Error, LoginData>;
+  loginMutation: UseMutationResult<SessionUser, Error, LoginData>;
   logoutMutation: UseMutationResult<void, Error, void>;
-  registerMutation: UseMutationResult<SelectUser, Error, InsertUser>;
+  registerMutation: UseMutationResult<SessionUser, Error, InsertUser>;
 };
 
 type LoginData = Pick<InsertUser, "username" | "password">;
@@ -26,7 +34,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     data: user,
     error,
     isLoading,
-  } = useQuery<SelectUser | undefined, Error>({
+  } = useQuery<SessionUser | undefined, Error>({
     queryKey: ["/api/user"],
     queryFn: getQueryFn({ on401: "returnNull" }),
   });
@@ -35,11 +43,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     mutationFn: async (credentials: LoginData) => {
       const res = await apiRequest("POST", "/api/login", credentials);
       const userData = await res.json();
-      // Remove password from user data
-      const { password: _, ...userWithoutPassword } = userData;
-      return userWithoutPassword as SelectUser;
+      const { password: _, ...rest } = userData;
+      return rest as SessionUser;
     },
-    onSuccess: (user: SelectUser) => {
+    onSuccess: (user: SessionUser) => {
       // Update query cache and invalidate to refetch
       queryClient.setQueryData(["/api/user"], user);
       queryClient.invalidateQueries({ queryKey: ["/api/user"] });
@@ -57,11 +64,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     mutationFn: async (credentials: InsertUser) => {
       const res = await apiRequest("POST", "/api/register", credentials);
       const userData = await res.json();
-      // Remove password from user data
-      const { password: _, ...userWithoutPassword } = userData;
-      return userWithoutPassword as SelectUser;
+      const { password: _, ...rest } = userData;
+      return rest as SessionUser;
     },
-    onSuccess: (user: SelectUser) => {
+    onSuccess: (user: SessionUser) => {
       // Update query cache and invalidate to refetch
       queryClient.setQueryData(["/api/user"], user);
       queryClient.invalidateQueries({ queryKey: ["/api/user"] });

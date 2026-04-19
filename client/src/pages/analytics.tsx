@@ -1,192 +1,286 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Post } from "@shared/schema";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Link } from "wouter";
-import { BarChart, ResponsiveContainer, XAxis, YAxis, Bar, Tooltip } from "recharts";
-import { Home, BarChart2, LogOut, Menu } from "lucide-react";
-import { useAuth } from "@/hooks/use-auth";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { useState } from "react";
-import Clock from "@/components/ui/clock";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  BarChart,
+  ResponsiveContainer,
+  XAxis,
+  YAxis,
+  Bar,
+  Tooltip,
+  PieChart,
+  Pie,
+  Cell,
+  Legend,
+} from "recharts";
+import { BarChart2, Calendar, Heart, LayoutList, MessageCircle } from "lucide-react";
+import { useMemo } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+import { EmptyState } from "@/components/ui/empty-state";
+import { cn } from "@/lib/utils";
+import { appCard } from "@/lib/app-surface";
+import { AppLayout } from "@/components/app-layout";
 
-function Sidebar({ className = "" }: { className?: string }) {
-  const { logoutMutation } = useAuth();
-  return (
-    <div className={className}>
-      <div className="p-6">
-        <h1 className="text-xl font-bold bg-gradient-to-r from-primary to-purple-600 bg-clip-text text-transparent">
-          Multi<span className="text-primary">Social</span> Studio
-        </h1>
-        <span><Clock/></span>
-      </div>
-      <Separator />
-      <nav className="p-4">
-        <div className="space-y-2">
-          <Link href="/app">
-            <a className="flex items-center gap-3 px-3 py-2 text-muted-foreground hover:text-primary rounded-lg hover:bg-primary/5 transition-colors">
-              <Home className="h-5 w-5" />
-              Dashboard
-            </a>
-          </Link>
-          <Link href="/analytics">
-            <a className="flex items-center gap-3 px-3 py-2 text-primary rounded-lg bg-primary/5">
-              <BarChart2 className="h-5 w-5" />
-              Analytics
-            </a>
-          </Link>
-        </div>
-      </nav>
-      <Separator />
-      <div className="p-4">
-        <Button 
-          variant="ghost" 
-          className="w-full justify-start text-muted-foreground hover:text-primary"
-          onClick={() => logoutMutation.mutate()}
-        >
-          <LogOut className="h-5 w-5 mr-3" />
-          Logout
-        </Button>
-      </div>
-    </div>
-  );
+const CHART_COLORS = {
+  likes: "hsl(var(--primary))",
+  comments: "hsl(262 83% 58%)",
+  shares: "hsl(199 89% 48%)",
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  published: "#10b981",
+  scheduled: "#3b82f6",
+  draft: "#94a3b8",
+  failed: "#f43f5e",
+};
+
+function analyticsTotals(posts: Post[]) {
+  let likes = 0;
+  let comments = 0;
+  let shares = 0;
+  for (const p of posts) {
+    if (p.status !== "published") continue;
+    const a = p.analytics as Record<string, number> | null | undefined;
+    likes += a?.likes ?? 0;
+    comments += a?.comments ?? 0;
+    shares += a?.shares ?? 0;
+  }
+  return { likes, comments, shares, total: likes + comments + shares };
 }
 
 export default function Analytics() {
-  const { logoutMutation } = useAuth();
-  // Share posts cache with dashboard – same queryKey and fetch
-  const { data: posts = [], isLoading } = useQuery<Post[]>({
+  const { data: posts = [], isLoading, isError, error } = useQuery<Post[]>({
     queryKey: ["posts"],
     queryFn: async () => {
       const res = await apiRequest("GET", "/api/posts");
       return res.json();
     },
   });
-  const [isOpen, setIsOpen] = useState(false);
 
-  const publishedPosts = posts.filter(p => p.status === "published");
+  const publishedPosts = useMemo(() => posts.filter((p) => p.status === "published"), [posts]);
+  const scheduledCount = useMemo(() => posts.filter((p) => p.status === "scheduled").length, [posts]);
+  const draftCount = useMemo(() => posts.filter((p) => p.status === "draft").length, [posts]);
+  const failedCount = useMemo(() => posts.filter((p) => p.status === "failed").length, [posts]);
 
-  const engagementData = publishedPosts.map(post => ({
-    content: post.content.slice(0, 20) + "...",
-    likes: (post.analytics as any)?.likes || 0,
-    comments: (post.analytics as any)?.comments || 0,
-    shares: (post.analytics as any)?.shares || 0
-  }));
+  const engagementRows = useMemo(() => {
+    return publishedPosts.slice(0, 12).map((post, i) => {
+      const a = (post.analytics || {}) as Record<string, number>;
+      return {
+        id: post.id,
+        label: `Post ${i + 1}`,
+        likes: a.likes ?? 0,
+        comments: a.comments ?? 0,
+        shares: a.shares ?? 0,
+      };
+    });
+  }, [publishedPosts]);
+
+  const statusPie = useMemo(
+    () =>
+      [
+        { name: "Published", value: publishedPosts.length, fill: STATUS_COLORS.published },
+        { name: "Scheduled", value: scheduledCount, fill: STATUS_COLORS.scheduled },
+        { name: "Draft", value: draftCount, fill: STATUS_COLORS.draft },
+        { name: "Failed", value: failedCount, fill: STATUS_COLORS.failed },
+      ].filter((d) => d.value > 0),
+    [publishedPosts.length, scheduledCount, draftCount, failedCount],
+  );
+
+  const totals = useMemo(() => analyticsTotals(posts), [posts]);
 
   return (
-    <div className="min-h-screen bg-background flex">
-      {/* Desktop Sidebar */}
-      <aside className="hidden md:block w-64 border-r bg-card">
-        <Sidebar />
-      </aside>
-
-      {/* Mobile Sidebar */}
-      <Sheet open={isOpen} onOpenChange={setIsOpen}>
-        <SheetTrigger asChild>
-          <Button variant="ghost" size="icon" className="md:hidden absolute top-4 left-4">
-            <Menu className="h-6 w-6" />
-          </Button>
-        </SheetTrigger>
-        <SheetContent side="left" className="w-64 p-0">
-          <Sidebar />
-        </SheetContent>
-      </Sheet>
-
-      <main className="flex-1 overflow-auto p-4 md:p-0">
-        <div className="container max-w-7xl py-6">
-          <div className="mb-8 md:mb-6">
-            <div className="h-12 md:h-0" /> {/* Spacer for mobile menu */}
-            <h2 className="text-2xl md:text-3xl font-bold tracking-tight">Analytics Overview</h2>
-            <p className="text-muted-foreground mt-2">Track your social media performance and engagement.</p>
-          </div>
-
-          <div className="grid gap-6">
-            {/* Stats Grid */}
-            <div className="grid gap-4 md:gap-6 grid-cols-2 md:grid-cols-3">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm font-medium">Total Posts</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {isLoading ? (
-                    <div className="h-8 bg-muted/10 animate-pulse rounded" />
-                  ) : (
-                    <p className="text-2xl md:text-3xl font-bold">{publishedPosts.length}</p>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm font-medium">Total Engagement</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {isLoading ? (
-                    <div className="h-8 bg-muted/10 animate-pulse rounded" />
-                  ) : (
-                    <p className="text-2xl md:text-3xl font-bold">
-                      {publishedPosts.reduce((sum, post) => 
-                        sum + ((post.analytics as any)?.likes || 0) + 
-                        ((post.analytics as any)?.comments || 0) + 
-                        ((post.analytics as any)?.shares || 0), 0
-                      )}
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card className="col-span-2 md:col-span-1">
-                <CardHeader>
-                  <CardTitle className="text-sm font-medium">Scheduled Posts</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {isLoading ? (
-                    <div className="h-8 bg-muted/10 animate-pulse rounded" />
-                  ) : (
-                    <p className="text-2xl md:text-3xl font-bold">
-                      {posts.filter(p => p.status === "scheduled").length}
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
+    <AppLayout shellWidth="wide" topBarTitle="Analytics" topBarIcon={BarChart2}>
+      <div className="space-y-8">
+        <div className="max-w-3xl space-y-2 pt-2 md:pt-0">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <BarChart2 className="h-5 w-5" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 sm:text-3xl">Analytics</h1>
+                <p className="mt-0.5 text-sm leading-relaxed text-zinc-600">
+                  Published post counts and engagement signals stored with each post.
+                </p>
+              </div>
             </div>
-
-            {/* Engagement Chart */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Post Engagement</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {isLoading ? (
-                  <div className="h-[300px] md:h-[400px] bg-muted/10 animate-pulse rounded-lg" />
-                ) : (
-                  <div className="h-[300px] md:h-[400px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={engagementData}>
-                        <XAxis 
-                          dataKey="content" 
-                          tick={{ fontSize: 12 }}
-                          interval={0}
-                          angle={-45}
-                          textAnchor="end"
-                          height={60}
-                        />
-                        <YAxis width={30} />
-                        <Tooltip />
-                        <Bar dataKey="likes" fill="hsl(var(--primary))" name="Likes" />
-                        <Bar dataKey="comments" fill="hsl(var(--secondary))" name="Comments" />
-                        <Bar dataKey="shares" fill="hsl(var(--accent))" name="Shares" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
         </div>
-      </main>
-    </div>
+
+        {isError && (
+            <Card className={cn(appCard, "border-destructive/40")}>
+              <CardHeader>
+                <CardTitle className="text-base">Could not load posts</CardTitle>
+                <CardDescription>{(error as Error).message}</CardDescription>
+              </CardHeader>
+            </Card>
+          )}
+
+          {!isError && (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <Card className={appCard}>
+                  <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Published</CardTitle>
+                    <LayoutList className="h-4 w-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent>
+                    {isLoading ? (
+                      <Skeleton className="h-9 w-16 rounded-md" />
+                    ) : (
+                      <p className="text-3xl font-bold tabular-nums">{publishedPosts.length}</p>
+                    )}
+                  </CardContent>
+                </Card>
+                <Card className={appCard}>
+                  <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Scheduled</CardTitle>
+                    <Calendar className="h-4 w-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent>
+                    {isLoading ? (
+                      <Skeleton className="h-9 w-16 rounded-md" />
+                    ) : (
+                      <p className="text-3xl font-bold tabular-nums">{scheduledCount}</p>
+                    )}
+                  </CardContent>
+                </Card>
+                <Card className={cn(appCard, "sm:col-span-2 lg:col-span-2")}>
+                  <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Engagement total</CardTitle>
+                    <Heart className="h-4 w-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {isLoading ? (
+                      <Skeleton className="h-9 w-24 rounded-md" />
+                    ) : (
+                      <>
+                        <p className="text-3xl font-bold tabular-nums">{totals.total}</p>
+                        <p className="text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
+                          <span className="inline-flex items-center gap-1">
+                            <span className="h-2 w-2 rounded-full bg-primary" />
+                            Likes {totals.likes}
+                          </span>
+                          <span className="inline-flex items-center gap-1">
+                            <span className="h-2 w-2 rounded-full bg-[hsl(262_83%_58%)]" />
+                            Comments {totals.comments}
+                          </span>
+                          <span className="inline-flex items-center gap-1">
+                            <span className="h-2 w-2 rounded-full bg-[hsl(199_89%_48%)]" />
+                            Shares {totals.shares}
+                          </span>
+                        </p>
+                      </>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="grid gap-6 lg:grid-cols-12 items-start">
+                <Card className={cn(appCard, "lg:col-span-5")}>
+                  <CardHeader>
+                    <CardTitle className="text-lg">Post pipeline</CardTitle>
+                    <CardDescription>How many posts are in each stage</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {isLoading ? (
+                      <Skeleton className="h-[240px] w-full rounded-lg" />
+                    ) : statusPie.length === 0 ? (
+                      <div className="h-[220px] flex items-center justify-center text-sm text-muted-foreground">
+                        No posts yet
+                      </div>
+                    ) : (
+                      <ChartContainer config={{}} className="h-[260px] w-full mx-auto max-w-sm">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={statusPie}
+                              dataKey="value"
+                              nameKey="name"
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={52}
+                              outerRadius={88}
+                              paddingAngle={2}
+                            >
+                              {statusPie.map((entry, i) => (
+                                <Cell key={i} fill={entry.fill} />
+                              ))}
+                            </Pie>
+                            <ChartTooltip content={<ChartTooltipContent />} />
+                            <Legend verticalAlign="bottom" height={28} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </ChartContainer>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className={cn(appCard, "lg:col-span-7")}>
+                  <CardHeader>
+                    <CardTitle className="text-lg">Engagement by post</CardTitle>
+                    <CardDescription>
+                      Stacked likes, comments, and shares for up to 12 recent published posts (when analytics exist).
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="px-2 sm:px-6">
+                    {isLoading ? (
+                      <Skeleton className="h-[320px] w-full rounded-lg" />
+                    ) : engagementRows.length === 0 ? (
+                      <EmptyState
+                        title="No published posts"
+                        description="Publish a post to see engagement breakdown here."
+                        icon={BarChart2}
+                      />
+                    ) : (
+                      <ChartContainer
+                        config={{
+                          likes: { label: "Likes", color: CHART_COLORS.likes },
+                          comments: { label: "Comments", color: CHART_COLORS.comments },
+                          shares: { label: "Shares", color: CHART_COLORS.shares },
+                        }}
+                        className="h-[min(360px,55vh)] w-full"
+                      >
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={engagementRows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                            <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={0} tickLine={false} axisLine={false} />
+                            <YAxis width={36} tick={{ fontSize: 11 }} allowDecimals={false} tickLine={false} axisLine={false} />
+                            <Tooltip
+                              contentStyle={{
+                                borderRadius: "8px",
+                                border: "1px solid hsl(var(--border))",
+                                background: "hsl(var(--card))",
+                              }}
+                            />
+                            <Bar dataKey="likes" stackId="e" fill={CHART_COLORS.likes} name="Likes" radius={[0, 0, 0, 0]} />
+                            <Bar dataKey="comments" stackId="e" fill={CHART_COLORS.comments} name="Comments" />
+                            <Bar
+                              dataKey="shares"
+                              stackId="e"
+                              fill={CHART_COLORS.shares}
+                              name="Shares"
+                              radius={[6, 6, 0, 0]}
+                            />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </ChartContainer>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+
+              <Card className={cn(appCard, "rounded-xl border-indigo-100/80 bg-indigo-50/50")}>
+                <CardContent className="py-4 px-5 sm:px-6 flex flex-col sm:flex-row sm:items-center gap-3 text-sm text-muted-foreground">
+                  <MessageCircle className="h-4 w-4 shrink-0 text-primary hidden sm:block" />
+                  <p className="leading-relaxed">
+                    Numbers come from <strong className="text-foreground">post analytics</strong> saved when platforms
+                    report metrics. Connect accounts under Dashboard if totals look empty.
+                  </p>
+                </CardContent>
+              </Card>
+            </>
+          )}
+      </div>
+    </AppLayout>
   );
 }
