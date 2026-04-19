@@ -54,6 +54,7 @@ async function createSuperUser() {
         username,
         email,
         password: hashedPassword,
+        role: "super_admin",
         isActive: true,
         isDeleted: false,
       })
@@ -61,7 +62,7 @@ async function createSuperUser() {
 
     const user = result[0];
 
-    console.log("✅ Superuser created successfully!");
+    console.log("✅ Super admin created successfully (role: super_admin)!");
     console.log("\n📋 Login Credentials:");
     console.log(`   Username: ${username}`);
     console.log(`   Password: ${password}`);
