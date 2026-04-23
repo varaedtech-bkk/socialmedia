@@ -10,6 +10,7 @@ import dotenv from "dotenv";
 import { sanitizeUserForClient } from "./sanitize-user";
 import { getFeatureFlag, FEATURE_KEYS } from "./feature-config";
 import { getUserCapabilities } from "./user-capabilities";
+import { z } from "zod";
 
 dotenv.config(); // Load environment variables
 
@@ -20,6 +21,16 @@ declare global {
 }
 
 const scryptAsync = promisify(scrypt);
+
+async function getSafeCompanyContext(userId: number) {
+  try {
+    return await storage.getUserCompanyContext(userId);
+  } catch (error) {
+    // Keep auth/session usable even when tenant tables are not migrated yet.
+    console.warn("[AUTH] Company context unavailable, continuing without tenant context:", error);
+    return null;
+  }
+}
 
 export async function hashPassword(password: string) {
   const salt = randomBytes(16).toString("hex");
@@ -34,7 +45,25 @@ async function comparePasswords(supplied: string, stored: string) {
   return timingSafeEqual(hashedBuf, suppliedBuf);
 }
 
+export async function verifyPassword(supplied: string, stored: string) {
+  return comparePasswords(supplied, stored);
+}
+
 export function setupAuth(app: Express) {
+  const buildSessionUser = async (u: SelectUser) => {
+    const companyCtx = await getSafeCompanyContext(u.id);
+    return {
+      ...sanitizeUserForClient(u),
+      companyMembership: companyCtx?.membership ?? null,
+      company: companyCtx?.company ?? null,
+      capabilities: getUserCapabilities(u, {
+        companyPackageTier: (companyCtx?.company?.packageTier as "basic" | "advance" | undefined),
+        companyOpenRouterApiKey: companyCtx?.company?.openrouterApiKey ?? null,
+        membershipAiEnabled: companyCtx?.membership?.aiEnabled ?? true,
+      }),
+    };
+  };
+
   const sessionSettings: session.SessionOptions = {
     secret: process.env.SESSION_SECRET ?? 'dev-secret-key',
     resave: false,
@@ -114,10 +143,9 @@ export function setupAuth(app: Express) {
 
     req.login(user, (err) => {
       if (err) return next(err);
-      res.status(201).json({
-        ...sanitizeUserForClient(user),
-        capabilities: getUserCapabilities(user),
-      });
+      void (async () => {
+        res.status(201).json(await buildSessionUser(user));
+      })().catch(next);
     });
   });
 
@@ -145,9 +173,11 @@ export function setupAuth(app: Express) {
           return res.status(500).json({ error: "Failed to establish session" });
         }
         console.log(`[LOGIN API] ✅✅✅ Login successful, session created for: ${user.username}`);
-        return res.status(200).json({
-          ...sanitizeUserForClient(user),
-          capabilities: getUserCapabilities(user),
+        void (async () => {
+          return res.status(200).json(await buildSessionUser(user));
+        })().catch((e) => {
+          console.error("[LOGIN API] ❌ Response build error:", e);
+          return res.status(500).json({ error: "Failed to complete login" });
         });
       });
     })(req, res, next);
@@ -163,9 +193,73 @@ export function setupAuth(app: Express) {
   app.get("/api/user", (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
     const u = req.user!;
-    res.json({
-      ...sanitizeUserForClient(u),
-      capabilities: getUserCapabilities(u),
+    void (async () => {
+      res.json(await buildSessionUser(u));
+    })().catch(() => {
+      res.status(500).json({ error: "Failed to load user session" });
     });
+  });
+
+  app.patch("/api/account/profile", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    try {
+      const body = z
+        .object({
+          username: z.string().trim().min(3).max(64),
+          email: z.string().trim().email().max(254),
+        })
+        .parse(req.body);
+
+      const existingByUsername = await storage.getUserByUsername(body.username);
+      if (existingByUsername && existingByUsername.id !== req.user!.id) {
+        return res.status(409).json({ error: "Username is already taken." });
+      }
+
+      const updated = await storage.updateUserProfile(req.user!.id, {
+        username: body.username,
+        email: body.email,
+      });
+
+      return res.status(200).json(await buildSessionUser(updated));
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid profile details." });
+      }
+      return res.status(500).json({ error: "Failed to update profile." });
+    }
+  });
+
+  app.patch("/api/account/password", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    try {
+      const body = z
+        .object({
+          currentPassword: z.string().min(1),
+          newPassword: z
+            .string()
+            .min(8)
+            .max(128)
+            .regex(/[A-Za-z]/, "Password must include a letter.")
+            .regex(/[0-9]/, "Password must include a number."),
+        })
+        .parse(req.body);
+
+      const user = await storage.getUser(req.user!.id);
+      if (!user) return res.status(404).json({ error: "User not found." });
+
+      const validCurrent = await verifyPassword(body.currentPassword, user.password);
+      if (!validCurrent) {
+        return res.status(400).json({ error: "Current password is incorrect." });
+      }
+
+      const passwordHash = await hashPassword(body.newPassword);
+      await storage.updateUserPasswordHash(user.id, passwordHash);
+      return res.status(200).json({ ok: true });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid password details." });
+      }
+      return res.status(500).json({ error: "Failed to update password." });
+    }
   });
 }

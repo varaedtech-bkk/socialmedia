@@ -1,56 +1,92 @@
-# Privacy Policy
+# MultiSocial Studio
 
-## 1. Introduction
-Welcome to **VARA EdTech Co., Ltd.** (“we,” “our,” or “us”). We are a Thailand-based company developing a social media post scheduling and publishing platform. Our goal is to help users manage and automate their social media presence efficiently.
+MultiSocial Studio is a TypeScript full-stack social media workspace platform with role-aware admin controls, Stripe billing, and OpenRouter BYOK AI integration.
 
-As we explore different platform developer accounts and test integrations, we are committed to protecting your privacy. This Privacy Policy explains how we collect, use, store, and share your personal information.
+## Core Capabilities
 
-## 2. Information We Collect
-We may collect the following information when you interact with our platform:
+- Multi-platform social posting workflow
+- Access-request onboarding with super-admin approval
+- Trial + Stripe Advance billing flow
+- RBAC model:
+  - global roles: `super_admin`, `client`
+  - company roles: `owner`, `moderator`
+- AI generation gated by user-provided OpenRouter API key (BYOK)
+- Agent channel mapping for Telegram/WhatsApp with admin deactivation control
 
-### a) Information You Provide:
-- Your name, email address, and contact details when signing up  
-- Social media account details (e.g., Page ID, Access Token) when linking accounts  
-- Content you upload, schedule, or publish through our platform  
+## AI Agent (Telegram / WhatsApp)
 
-### b) Information Collected Automatically:
-- Log data (e.g., IP address, device information, browser type)  
-- Usage data (e.g., interactions with our platform, pages visited)  
+- Users can link Telegram chat identity via `/connect` flow and attach endpoint.
+- Linked chat identities are managed through `agent_channel_users`.
+- Company admin UI supports connected user visibility and active/inactive kill switch.
+- Moderators can be constrained via per-member AI toggle and platform allowlist.
 
-### c) Information from Third-Party Services:
-- When you connect your social media accounts, we may receive certain data based on your permissions (e.g., access to pages, publishing rights).  
+## Tech Stack
 
-## 3. How We Use Your Information
-We use the collected information to:  
-- Allow you to schedule and publish posts on social media platforms  
-- Improve our platform’s functionality and user experience  
-- Analyze usage trends and ensure security  
-- Provide customer support and address technical issues  
+- Frontend: React, Wouter, TanStack Query, Tailwind/shadcn
+- Backend: Express, TypeScript, Passport sessions
+- Database: PostgreSQL + Drizzle ORM
+- Billing: Stripe
 
-## 4. Data Sharing and Disclosure
-We do **not** sell or share your personal information with third parties, except:  
-- **With social media platforms:** As required to publish posts on your behalf  
-- **With service providers:** Who assist us in operating and improving our platform (e.g., hosting, analytics)  
-- **For legal compliance:** If required by law or to protect our rights and users' safety  
+## Getting Started
 
-## 5. Your Rights and Choices
-- You can disconnect your social media accounts at any time.  
-- You can request access, correction, or deletion of your data.  
-- You can opt out of emails or marketing communications.  
+### 1) Install dependencies
 
-## 6. Data Security
-We implement reasonable security measures to protect your data from unauthorized access, use, or disclosure. However, no system is completely secure, and we encourage users to take precautions when sharing sensitive information.
+```bash
+npm install
+```
 
-## 7. Data Retention
-We retain user data only for as long as necessary to fulfill the purposes outlined in this Privacy Policy. You can request deletion of your data by contacting us.
+### 2) Configure environment
 
-## 8. Changes to This Policy
-As our platform is still under development, we may update this Privacy Policy to reflect new features and regulatory changes. We will notify users of any significant updates.
+Set required environment variables for:
 
-## 9. Contact Us
-If you have any questions about this Privacy Policy, please contact us:
+- Database connection
+- Session/auth secrets
+- Stripe (if billing enabled)
+- OpenRouter integration
+- SMTP (optional, for approval notifications)
 
-📍 **Company Name:** VARA EdTech Co., Ltd.  
-📧 **Email:** [info@varaedtech.com](mailto:info@varaedtech.com)  
-🌍 **Website:** [https://varaedtech.com](https://varaedtech.com)  
-📍 **Location:** Thailand  
+### 3) Run migrations
+
+```bash
+npm run db:migrate
+```
+
+### 4) Optional demo seed
+
+```bash
+npm run seed:demo-accounts
+```
+
+### 5) Start development server
+
+```bash
+npm run dev
+```
+
+## Useful Scripts
+
+- `npm run dev`
+- `npm run check`
+- `npm run db:migrate`
+- `npm run seed:demo-accounts`
+- `npm run create-superuser`
+- `npm run set-super-admin`
+- `npm run test:deploy`
+
+## Project Documentation
+
+- Platform review: `PLATFORM_REVIEW_2026-04-22.md`
+- Admin system: `ADMIN_SYSTEM.md`
+- Feature flags: `FEATURE_FLAGS.md`
+- API reference: `docs/API.md`
+- Environment/deployment: `docs/ENVIRONMENT.md`
+- Production deployment checklist: `docs/DEPLOYMENT_CHECKLIST.md`
+- Production runbook: `docs/PRODUCTION_RUNBOOK.md`
+- Ops templates: `deploy/multisocial.service`, `ecosystem.config.example.js`
+- Archived 2025 report: `docs/archive/PROJECT_REPORT_2025.md`
+- Privacy policy: `PRIVACY_POLICY.md`
+
+## Notes
+
+- The latest implementation details and QA findings are documented in `PLATFORM_REVIEW_2026-04-22.md`.
+- Some docs may still contain historical notes; prioritize `PLATFORM_REVIEW_2026-04-22.md`, `docs/API.md`, and `docs/ENVIRONMENT.md` for current implementation details.

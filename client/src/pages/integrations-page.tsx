@@ -24,7 +24,7 @@ import { AppLayout } from "@/components/app-layout";
 type OpenRouterStatus = {
   hasUserKey: boolean;
   maskedKey: string | null;
-  fallbackFromPlatform: boolean;
+  requiresUserKey?: boolean;
 };
 
 function FeatureRow({ ok, label }: { ok: boolean; label: string }) {
@@ -107,8 +107,8 @@ export default function IntegrationsPage() {
   });
 
   const keyConfigured = Boolean(status?.hasUserKey);
-  const dashboardAiEnabled = isAdvance && (keyConfigured || Boolean(status?.fallbackFromPlatform));
-  const telegramAiEnabled = isAdvance && (keyConfigured || Boolean(status?.fallbackFromPlatform));
+  const dashboardAiEnabled = isAdvance && keyConfigured;
+  const telegramAiEnabled = isAdvance && keyConfigured;
 
   return (
     <AppLayout shellWidth="narrow" topBarTitle="Integrations" topBarIcon={KeyRound}>
@@ -237,19 +237,11 @@ export default function IntegrationsPage() {
                           </Badge>
                         </div>
                       </div>
-                    ) : status.fallbackFromPlatform ? (
-                      <Alert>
-                        <AlertTitle>Platform key in use</AlertTitle>
-                        <AlertDescription className="text-sm">
-                          The host configured a shared OpenRouter key. Add your own key below to use your quota and
-                          billing, or keep using the platform default if allowed.
-                        </AlertDescription>
-                      </Alert>
                     ) : (
                       <Alert variant="destructive">
                         <AlertTitle>No OpenRouter key</AlertTitle>
                         <AlertDescription className="text-sm">
-                          On an <strong>Advance</strong> plan, add a key below (or ask the host to set a platform key).
+                          On an <strong>Advance</strong> plan, add your own key below.
                           Without a key, AI in the app and <code className="rounded bg-background px-1 text-xs">/ai</code>{" "}
                           will not run.
                         </AlertDescription>

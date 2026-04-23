@@ -36,6 +36,48 @@
       "when": 1748769854000,
       "tag": "0004_post_content_overrides",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1748769855000,
+      "tag": "0005_company_tenants",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1748769856000,
+      "tag": "0006_agent_channel_users",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1748769857000,
+      "tag": "0007_access_request_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1748769858000,
+      "tag": "0008_access_request_device_hash",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1748769859000,
+      "tag": "0009_fix_default_company_roles",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1748769860000,
+      "tag": "0010_simplify_roles",
+      "breakpoints": true
     }
   ]
 }

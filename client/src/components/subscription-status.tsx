@@ -14,6 +14,9 @@ type SubscriptionResponse = {
   featureDisabled?: boolean;
   packageTier?: string;
   advanceCheckoutAvailable?: boolean;
+  trialEligible?: boolean;
+  trialEndsAt?: string | null;
+  paymentRequired?: boolean;
 };
 
 export const SubscriptionStatus = () => {
@@ -40,6 +43,7 @@ export const SubscriptionStatus = () => {
     : subscription?.posts_limit || '∞';
 
   const workspaceTier = subscription?.packageTier || "basic";
+  const trialEnd = subscription?.trialEndsAt ? new Date(subscription.trialEndsAt).toLocaleDateString() : null;
 
   return (
     <div className="flex flex-col gap-1 text-sm">
@@ -79,6 +83,15 @@ export const SubscriptionStatus = () => {
           <span className="font-medium">Renews:</span>
           <span>{expiryDate}</span>
         </div>
+      )}
+      {subscription?.trialEligible && trialEnd && (
+        <div className="flex items-center gap-2">
+          <span className="font-medium">Trial ends:</span>
+          <span>{trialEnd}</span>
+        </div>
+      )}
+      {subscription?.paymentRequired && (
+        <div className="text-xs text-rose-600">Payment required for Advance features</div>
       )}
     </div>
   );

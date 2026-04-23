@@ -46,3 +46,7 @@ next-env.d.ts
 /backups/*.sql
 /backups/*.sql.gz
 !/backups/.gitkeep
+
+# runtime/process manager files
+ecosystem.config.js
+/logs

@@ -9,7 +9,7 @@ import {
   openRouterRequestHeaders,
   resolveOpenRouterApiKeyForUser,
 } from "./openrouter-headers";
-import { userHasAdvanceAiEntitlement } from "./user-capabilities";
+import { isTrialExpiredForUser } from "./trial-policy";
 import type { Platform, User } from "@shared/schema";
 
 function getRequiredEnv(name: string): string {
@@ -60,12 +60,14 @@ function getHelpText(): string {
     "/status — Link + connection summary",
     "/myposts [n] — Latest posts (max 10)",
     "/deletepost <id> — Delete your post",
-    "/ai <prompt> — AI draft (your OpenRouter key from Integrations, or platform key)",
+    "/ai <prompt> — AI draft (requires your own OpenRouter key in Integrations)",
     "/help — This list",
   ].join("\n");
 }
 
 async function resolveTelegramUser(chatId: number | string): Promise<User> {
+  const mapped = await storage.getUserByAgentChannelIdentity("telegram", String(chatId));
+  if (mapped) return mapped;
   const linked = await storage.getUserByTelegramChatId(String(chatId));
   if (linked) return linked;
   const fallbackId = Number(process.env.TELEGRAM_DEFAULT_USER_ID || "0");
@@ -77,6 +79,22 @@ async function resolveTelegramUser(chatId: number | string): Promise<User> {
   const u = await storage.getUser(fallbackId);
   if (!u) throw new Error(`TELEGRAM_DEFAULT_USER_ID=${fallbackId} user not found`);
   return u;
+}
+
+async function resolveTelegramCompanyContext(user: User) {
+  return storage.getUserCompanyContext(user.id);
+}
+
+async function assertTelegramPlatformsAllowed(user: User, platforms: Platform[]): Promise<void> {
+  const companyCtx = await resolveTelegramCompanyContext(user);
+  const allowed = Array.isArray(companyCtx?.membership?.allowedPlatforms)
+    ? companyCtx!.membership.allowedPlatforms
+    : [];
+  if (allowed.length === 0) return;
+  const blocked = platforms.filter((p) => !allowed.includes(p));
+  if (blocked.length > 0) {
+    throw new Error(`Your company admin restricted these platforms: ${blocked.join(", ")}`);
+  }
 }
 
 function publicBaseUrl(): string {
@@ -166,6 +184,7 @@ async function createAndPublishPost(
   mediaType: "text" | "image" | "video",
   publishNow: boolean
 ) {
+  await assertTelegramPlatformsAllowed(user, platforms);
   const post = await storage.createPost(user.id, {
     content,
     scheduledTime: null,
@@ -227,11 +246,22 @@ async function saveTelegramPhotoToUpload(photo: { file_id: string }[]): Promise<
 }
 
 async function generateWithAi(prompt: string, user: User): Promise<string> {
-  const apiKey = resolveOpenRouterApiKeyForUser(user);
+  const companyCtx = await resolveTelegramCompanyContext(user);
+  const companyTier = companyCtx?.company?.packageTier === "advance" ? "advance" : "basic";
+  const aiEnabled = companyCtx?.membership?.aiEnabled ?? true;
+  const trialExpired = isTrialExpiredForUser(user);
+  if (user.role !== "super_admin" && companyTier !== "advance") {
+    throw new Error("AI is available only on Advance company plan. Ask your company admin to upgrade.");
+  }
+  if (trialExpired) {
+    throw new Error("Your 7-day trial ended. Open Billing in the web app and complete Stripe checkout.");
+  }
+  if (!aiEnabled) {
+    throw new Error("AI is disabled for your member account by a company admin.");
+  }
+  const apiKey = resolveOpenRouterApiKeyForUser(user, companyCtx?.company?.openrouterApiKey ?? null);
   if (!apiKey) {
-    throw new Error(
-      "No OpenRouter key: add your API key in the web app under Integrations, or set OPENROUTER_API_KEY on the server."
-    );
+    throw new Error("No OpenRouter key: add your own API key in Integrations.");
   }
   const model = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -252,7 +282,7 @@ async function generateWithAi(prompt: string, user: User): Promise<string> {
     if (response.status === 401 || String(raw).toLowerCase().includes("user not found")) {
       const hint = user.openrouterApiKey
         ? "OpenRouter rejected your API key. Update it in the web app: Integrations."
-        : "OpenRouter rejected the platform key. Set OPENROUTER_API_KEY on the server or add your key under Integrations.";
+        : "No OpenRouter key found. Add your key in the web app under Integrations.";
       throw new Error(hint);
     }
     throw new Error(raw);
@@ -527,20 +557,6 @@ export function registerTelegramRoutes(app: Express): void {
           return res.sendStatus(200);
         }
         const user = await resolveTelegramUser(chatId);
-        if (!userHasAdvanceAiEntitlement(user)) {
-          await sendTelegramMessage(
-            chatId,
-            "AI commands need an Advance package. You can still post with /fb, /li, /post, etc. Contact your administrator to upgrade."
-          );
-          return res.sendStatus(200);
-        }
-        if (!resolveOpenRouterApiKeyForUser(user)) {
-          await sendTelegramMessage(
-            chatId,
-            "Add your OpenRouter API key in the web app: Integrations (Advance plan), then try /ai again."
-          );
-          return res.sendStatus(200);
-        }
         const aiText = await generateWithAi(prompt, user);
         await sendTelegramMessage(chatId, `AI draft:\n\n${aiText}`);
         return res.sendStatus(200);

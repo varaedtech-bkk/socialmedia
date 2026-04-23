@@ -24,6 +24,7 @@ import AnalogClock from "@/components/ui/analog-clock";
 
 
 const TELEGRAM_BIND_STORAGE = "telegram_bind_token_pending";
+const WHATSAPP_BIND_STORAGE = "whatsapp_bind_token_pending";
 
 export default function AuthPage() {
   const [, setLocation] = useLocation();
@@ -34,7 +35,7 @@ export default function AuthPage() {
     queryFn: async () => {
       const res = await fetch("/api/public-config");
       if (!res.ok) return { publicRegistrationEnabled: false };
-      return res.json() as { publicRegistrationEnabled: boolean };
+      return (await res.json()) as { publicRegistrationEnabled: boolean };
     },
     staleTime: 60_000,
   });
@@ -51,28 +52,40 @@ export default function AuthPage() {
     if (t) {
       sessionStorage.setItem(TELEGRAM_BIND_STORAGE, t);
       params.delete("telegram_bind");
-      const next = params.toString();
-      window.history.replaceState({}, "", `${window.location.pathname}${next ? `?${next}` : ""}`);
     }
+    const w = params.get("whatsapp_bind");
+    if (w) {
+      sessionStorage.setItem(WHATSAPP_BIND_STORAGE, w);
+      params.delete("whatsapp_bind");
+    }
+    const next = params.toString();
+    window.history.replaceState({}, "", `${window.location.pathname}${next ? `?${next}` : ""}`);
   }, []);
 
   // After login/register: attach Telegram if pending, then go to dashboard
   useEffect(() => {
     if (!user) return;
-    const token = typeof window !== "undefined" ? sessionStorage.getItem(TELEGRAM_BIND_STORAGE) : null;
-    if (token) {
+    const telegramToken = typeof window !== "undefined" ? sessionStorage.getItem(TELEGRAM_BIND_STORAGE) : null;
+    const whatsAppToken = typeof window !== "undefined" ? sessionStorage.getItem(WHATSAPP_BIND_STORAGE) : null;
+    if (telegramToken || whatsAppToken) {
       (async () => {
         try {
-          await apiRequest("POST", "/api/telegram/attach", { token });
-          sessionStorage.removeItem(TELEGRAM_BIND_STORAGE);
+          if (telegramToken) {
+            await apiRequest("POST", "/api/telegram/attach", { token: telegramToken });
+            sessionStorage.removeItem(TELEGRAM_BIND_STORAGE);
+          }
+          if (whatsAppToken) {
+            await apiRequest("POST", "/api/whatsapp/attach", { token: whatsAppToken });
+            sessionStorage.removeItem(WHATSAPP_BIND_STORAGE);
+          }
           await queryClient.invalidateQueries({ queryKey: ["/api/user"] });
           toast({
-            title: "Telegram linked",
-            description: "You can post from Telegram with /fb",
+            title: "Chat linked",
+            description: "Your Telegram/WhatsApp identity is now linked.",
           });
         } catch (e) {
           toast({
-            title: "Telegram link failed",
+            title: "Chat link failed",
             description: e instanceof Error ? e.message : "Unknown error",
             variant: "destructive",
           });
@@ -182,6 +195,7 @@ function LoginForm() {
         <Input 
           id="username" 
           {...form.register("username")} 
+          autoComplete="username"
           disabled={loginMutation.isPending}
         />
         {form.formState.errors.username && (
@@ -195,6 +209,7 @@ function LoginForm() {
           type="password" 
           id="password" 
           {...form.register("password")} 
+          autoComplete="current-password"
           disabled={loginMutation.isPending}
         />
         {form.formState.errors.password && (
@@ -240,6 +255,7 @@ function RegisterForm() {
         <Input 
           id="reg-username" 
           {...form.register("username")} 
+          autoComplete="username"
           disabled={registerMutation.isPending}
         />
         {form.formState.errors.username && (
@@ -253,6 +269,7 @@ function RegisterForm() {
           id="reg-email" 
           type="email"
           {...form.register("email")} 
+          autoComplete="email"
           disabled={registerMutation.isPending}
         />
         {form.formState.errors.email && (
@@ -266,6 +283,7 @@ function RegisterForm() {
           type="password" 
           id="reg-password" 
           {...form.register("password")} 
+          autoComplete="new-password"
           disabled={registerMutation.isPending}
         />
         {form.formState.errors.password && (

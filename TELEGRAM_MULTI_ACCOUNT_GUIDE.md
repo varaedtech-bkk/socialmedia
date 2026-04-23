@@ -28,7 +28,8 @@ Migration: `migrations/0001_social_accounts_telegram.sql`
 
 Adds:
 
-- `users.telegram_chat_id` (nullable, unique when present)
+- `agent_channel_users` table (primary mapping for Telegram/WhatsApp identities)
+- `users.telegram_chat_id` remains as a legacy/fallback path in some flows
 - `social_accounts` table with:
   - `user_id`
   - `platform`
@@ -150,6 +151,11 @@ Notes:
 - Default account is used by both dashboard posting and Telegram `/fb`.
 - User can switch defaults any time without reconnecting.
 
+## Deactivating a linked device
+
+Company admins can open `Admin -> Company -> Connected chat users` and set a mapping to inactive.
+When inactive, that chat identity is blocked for linked agent operations until re-enabled.
+
 ## API Endpoints
 
 ### Telegram link and account management
@@ -157,7 +163,12 @@ Notes:
 - `POST /api/telegram/attach`
   - auth required
   - body: `{ "token": "<telegram_bind_token>" }`
-  - verifies signed token and links `users.telegram_chat_id`
+  - verifies signed token and links chat identity to user mapping flow
+
+- `POST /api/whatsapp/attach`
+  - auth required
+  - body: `{ "token": "<whatsapp_bind_token>" }`
+  - verifies signed token and links WhatsApp identity to `agent_channel_users`
 
 - `GET /api/social-accounts`
   - auth required

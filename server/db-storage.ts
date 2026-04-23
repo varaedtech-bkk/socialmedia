@@ -1,7 +1,17 @@
 import { eq, and, desc, sql, gte, lte, or, ne } from "drizzle-orm";
 import { db, schema } from "./db";
 import { IStorage, Subscription, InsertSubscription } from "./storage";
-import { User, InsertUser, Post, InsertPost, SocialAccount, type AccessRequest } from "@shared/schema";
+import {
+  User,
+  InsertUser,
+  Post,
+  InsertPost,
+  SocialAccount,
+  type AccessRequest,
+  type Company,
+  type CompanyMembership,
+  type AgentChannelUser,
+} from "@shared/schema";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 import dotenv from "dotenv";
@@ -238,6 +248,263 @@ export class DbStorage implements IStorage {
   async createUser(insertUser: InsertUser): Promise<User> {
     const result = await db.insert(schema.users).values(insertUser).returning();
     return result[0];
+  }
+
+  async updateUserProfile(userId: number, updates: { username: string; email: string }): Promise<User> {
+    const result = await db
+      .update(schema.users)
+      .set({
+        username: updates.username,
+        email: updates.email,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(schema.users.id, userId), eq(schema.users.isDeleted, false)))
+      .returning();
+
+    if (result.length === 0) throw new Error("User not found");
+    return result[0];
+  }
+
+  async updateUserPasswordHash(userId: number, passwordHash: string): Promise<User> {
+    const result = await db
+      .update(schema.users)
+      .set({
+        password: passwordHash,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(schema.users.id, userId), eq(schema.users.isDeleted, false)))
+      .returning();
+
+    if (result.length === 0) throw new Error("User not found");
+    return result[0];
+  }
+
+  async getUserCompanyContext(userId: number): Promise<{ company: Company; membership: CompanyMembership } | null> {
+    const row = await db
+      .select({
+        company: schema.companies,
+        membership: schema.companyMemberships,
+      })
+      .from(schema.companyMemberships)
+      .innerJoin(schema.companies, eq(schema.companyMemberships.companyId, schema.companies.id))
+      .where(
+        and(
+          eq(schema.companyMemberships.userId, userId),
+          eq(schema.companyMemberships.isActive, true),
+        ),
+      )
+      .orderBy(
+        sql`CASE WHEN ${schema.companyMemberships.role} = 'owner' THEN 0 ELSE 1 END`,
+        desc(schema.companyMemberships.id),
+      )
+      .limit(1);
+
+    if (row.length === 0) return null;
+    return { company: row[0].company, membership: row[0].membership };
+  }
+
+  async setCompanyMembershipControls(
+    companyId: number,
+    targetUserId: number,
+    actorUserId: number,
+    updates: {
+      aiEnabled?: boolean;
+      allowedPlatforms?: string[];
+      role?: "owner" | "moderator";
+      isActive?: boolean;
+    }
+  ): Promise<CompanyMembership> {
+    const existing = await db
+      .select()
+      .from(schema.companyMemberships)
+      .where(
+        and(
+          eq(schema.companyMemberships.companyId, companyId),
+          eq(schema.companyMemberships.userId, targetUserId),
+        ),
+      )
+      .limit(1);
+
+    if (existing.length === 0) {
+      throw new Error("Membership not found");
+    }
+
+    const prev = existing[0];
+    const nextValues: Record<string, unknown> = {
+      updatedAt: new Date(),
+    };
+    if (updates.aiEnabled !== undefined) nextValues.aiEnabled = updates.aiEnabled;
+    if (updates.allowedPlatforms !== undefined) nextValues.allowedPlatforms = updates.allowedPlatforms;
+    if (updates.role !== undefined) nextValues.role = updates.role;
+    if (updates.isActive !== undefined) nextValues.isActive = updates.isActive;
+
+    const changed = await db
+      .update(schema.companyMemberships)
+      .set(nextValues)
+      .where(eq(schema.companyMemberships.id, prev.id))
+      .returning();
+    if (changed.length === 0) throw new Error("Failed to update membership");
+
+    await db.insert(schema.auditLogs).values({
+      companyId,
+      changedByUserId: actorUserId,
+      targetUserId,
+      action: "membership_controls_updated",
+      oldValue: {
+        role: prev.role,
+        aiEnabled: prev.aiEnabled,
+        allowedPlatforms: prev.allowedPlatforms,
+        isActive: prev.isActive,
+      },
+      newValue: {
+        role: changed[0].role,
+        aiEnabled: changed[0].aiEnabled,
+        allowedPlatforms: changed[0].allowedPlatforms,
+        isActive: changed[0].isActive,
+      },
+    });
+
+    return changed[0];
+  }
+
+  async getUserByAgentChannelIdentity(
+    channel: "telegram" | "whatsapp",
+    channelUserId: string
+  ): Promise<User | undefined> {
+    const rows = await db
+      .select({ user: schema.users })
+      .from(schema.agentChannelUsers)
+      .innerJoin(schema.users, eq(schema.agentChannelUsers.userId, schema.users.id))
+      .where(
+        and(
+          eq(schema.agentChannelUsers.channel, channel),
+          eq(schema.agentChannelUsers.channelUserId, channelUserId),
+          eq(schema.agentChannelUsers.isActive, true),
+          eq(schema.users.isDeleted, false),
+        ),
+      )
+      .limit(1);
+    return rows[0]?.user;
+  }
+
+  async upsertAgentChannelUserLink(params: {
+    companyId: number;
+    userId: number;
+    channel: "telegram" | "whatsapp";
+    channelUserId: string;
+    isActive?: boolean;
+  }): Promise<AgentChannelUser> {
+    const active = params.isActive ?? true;
+    const existingByChannelIdentity = await db
+      .select()
+      .from(schema.agentChannelUsers)
+      .where(
+        and(
+          eq(schema.agentChannelUsers.channel, params.channel),
+          eq(schema.agentChannelUsers.channelUserId, params.channelUserId),
+        ),
+      )
+      .limit(1);
+    if (existingByChannelIdentity.length > 0) {
+      const updated = await db
+        .update(schema.agentChannelUsers)
+        .set({
+          companyId: params.companyId,
+          userId: params.userId,
+          isActive: active,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.agentChannelUsers.id, existingByChannelIdentity[0].id))
+        .returning();
+      return updated[0];
+    }
+
+    const existingByUserChannel = await db
+      .select()
+      .from(schema.agentChannelUsers)
+      .where(
+        and(
+          eq(schema.agentChannelUsers.companyId, params.companyId),
+          eq(schema.agentChannelUsers.userId, params.userId),
+          eq(schema.agentChannelUsers.channel, params.channel),
+        ),
+      )
+      .limit(1);
+    if (existingByUserChannel.length > 0) {
+      const updated = await db
+        .update(schema.agentChannelUsers)
+        .set({
+          channelUserId: params.channelUserId,
+          isActive: active,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.agentChannelUsers.id, existingByUserChannel[0].id))
+        .returning();
+      return updated[0];
+    }
+
+    const inserted = await db
+      .insert(schema.agentChannelUsers)
+      .values({
+        companyId: params.companyId,
+        userId: params.userId,
+        channel: params.channel,
+        channelUserId: params.channelUserId,
+        isActive: active,
+      })
+      .returning();
+    return inserted[0];
+  }
+
+  async listCompanyAgentChannelUsers(companyId: number): Promise<Array<{
+    id: number;
+    channel: string;
+    channelUserId: string;
+    isActive: boolean;
+    userId: number;
+    username: string;
+    email: string;
+    updatedAt: Date;
+  }>> {
+    return db
+      .select({
+        id: schema.agentChannelUsers.id,
+        channel: schema.agentChannelUsers.channel,
+        channelUserId: schema.agentChannelUsers.channelUserId,
+        isActive: schema.agentChannelUsers.isActive,
+        userId: schema.users.id,
+        username: schema.users.username,
+        email: schema.users.email,
+        updatedAt: schema.agentChannelUsers.updatedAt,
+      })
+      .from(schema.agentChannelUsers)
+      .innerJoin(schema.users, eq(schema.agentChannelUsers.userId, schema.users.id))
+      .where(eq(schema.agentChannelUsers.companyId, companyId))
+      .orderBy(desc(schema.agentChannelUsers.updatedAt));
+  }
+
+  async getAgentChannelUserById(id: number): Promise<AgentChannelUser | undefined> {
+    const rows = await db
+      .select()
+      .from(schema.agentChannelUsers)
+      .where(eq(schema.agentChannelUsers.id, id))
+      .limit(1);
+    return rows[0];
+  }
+
+  async updateAgentChannelUserActive(id: number, isActive: boolean): Promise<AgentChannelUser> {
+    const rows = await db
+      .update(schema.agentChannelUsers)
+      .set({
+        isActive,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.agentChannelUsers.id, id))
+      .returning();
+    if (rows.length === 0) {
+      throw new Error("Channel mapping not found");
+    }
+    return rows[0];
   }
 
   async updateUserFacebookPersonalToken(userId: number, token: string): Promise<User> {
@@ -854,6 +1121,7 @@ export class DbStorage implements IStorage {
     fullName: string;
     company?: string | null;
     message?: string | null;
+    deviceHash?: string | null;
     packageTierRequested: "basic" | "advance";
   }): Promise<AccessRequest> {
     const [row] = await db
@@ -863,10 +1131,20 @@ export class DbStorage implements IStorage {
         fullName: data.fullName,
         company: data.company ?? null,
         message: data.message ?? null,
+        deviceHash: data.deviceHash ?? null,
         packageTierRequested: data.packageTierRequested,
       })
       .returning();
     return row;
+  }
+
+  async countApprovedAccessRequestsByDeviceHash(deviceHash: string): Promise<number> {
+    if (!deviceHash) return 0;
+    const rows = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.accessRequests)
+      .where(and(eq(schema.accessRequests.deviceHash, deviceHash), eq(schema.accessRequests.status, "approved")));
+    return Number(rows[0]?.count || 0);
   }
 
   async listAccessRequests(status?: string): Promise<AccessRequest[]> {
@@ -894,19 +1172,38 @@ export class DbStorage implements IStorage {
 
   async updateAccessRequest(
     id: number,
-    data: { status: string; approvedUserId?: number | null }
+    data: {
+      status?: string;
+      approvedUserId?: number | null;
+      paymentStatus?: "pending" | "trialing" | "paid" | "failed";
+      stripeCheckoutSessionId?: string | null;
+      stripeCustomerId?: string | null;
+      stripeSubscriptionId?: string | null;
+      trialEndsAt?: Date | null;
+      paidAt?: Date | null;
+    }
   ): Promise<AccessRequest> {
     const patch: {
-      status: string;
+      status?: string;
       updatedAt: Date;
       approvedUserId?: number | null;
-    } = {
-      status: data.status,
-      updatedAt: new Date(),
-    };
+      paymentStatus?: "pending" | "trialing" | "paid" | "failed";
+      stripeCheckoutSessionId?: string | null;
+      stripeCustomerId?: string | null;
+      stripeSubscriptionId?: string | null;
+      trialEndsAt?: Date | null;
+      paidAt?: Date | null;
+    } = { updatedAt: new Date() };
+    if (data.status !== undefined) patch.status = data.status;
     if (data.approvedUserId !== undefined) {
       patch.approvedUserId = data.approvedUserId;
     }
+    if (data.paymentStatus !== undefined) patch.paymentStatus = data.paymentStatus;
+    if (data.stripeCheckoutSessionId !== undefined) patch.stripeCheckoutSessionId = data.stripeCheckoutSessionId;
+    if (data.stripeCustomerId !== undefined) patch.stripeCustomerId = data.stripeCustomerId;
+    if (data.stripeSubscriptionId !== undefined) patch.stripeSubscriptionId = data.stripeSubscriptionId;
+    if (data.trialEndsAt !== undefined) patch.trialEndsAt = data.trialEndsAt;
+    if (data.paidAt !== undefined) patch.paidAt = data.paidAt;
     const [row] = await db
       .update(schema.accessRequests)
       .set(patch)

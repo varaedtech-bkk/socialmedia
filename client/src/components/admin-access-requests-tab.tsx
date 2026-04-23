@@ -43,6 +43,8 @@ type AccessRequest = {
   message: string | null;
   packageTierRequested: string;
   status: string;
+  paymentStatus: "pending" | "trialing" | "paid" | "failed";
+  trialEndsAt: string | null;
   approvedUserId: number | null;
   createdAt: string;
 };
@@ -137,9 +139,10 @@ export function AdminAccessRequestsTab({ canApprove = false }: { canApprove?: bo
         <CardHeader>
           <CardTitle className="text-lg font-semibold text-zinc-900">Pending access requests</CardTitle>
           <CardDescription className="text-sm leading-snug">
-            Approve to create a login (requires <strong>account creation</strong> permission). Configure the notify
-            inbox under <strong>Email</strong>; use <code className="text-[11px]">SMTP_*</code> in env for delivery.
-            Anyone with <strong>users.view</strong> can reject pending requests.
+            Approve to create a login after payment status is <strong>trialing</strong> or <strong>paid</strong>
+            (requires <strong>account creation</strong> permission). Configure the notify inbox under{" "}
+            <strong>Email</strong>; use <code className="text-[11px]">SMTP_*</code> in env for delivery. Anyone with{" "}
+            <strong>users.view</strong> can reject pending requests.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -154,6 +157,7 @@ export function AdminAccessRequestsTab({ canApprove = false }: { canApprove?: bo
                   <TableHead>Email</TableHead>
                   <TableHead>Name</TableHead>
                   <TableHead>Plan</TableHead>
+                  <TableHead>Payment</TableHead>
                   <TableHead>Submitted</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -170,6 +174,16 @@ export function AdminAccessRequestsTab({ canApprove = false }: { canApprove?: bo
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline">{r.packageTierRequested}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={r.paymentStatus === "pending" ? "secondary" : "default"}>
+                        {r.paymentStatus}
+                      </Badge>
+                      {r.trialEndsAt && (
+                        <div className="text-[11px] text-muted-foreground mt-1">
+                          trial ends {new Date(r.trialEndsAt).toLocaleDateString()}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {new Date(r.createdAt).toLocaleString()}

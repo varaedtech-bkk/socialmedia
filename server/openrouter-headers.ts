@@ -24,14 +24,17 @@ export function getOpenRouterApiKey(): string | undefined {
   return k ? k : undefined;
 }
 
-/** Per-user key first, then optional platform key in env (migration / ops). */
-export function resolveOpenRouterApiKeyForUser(user: Pick<User, "openrouterApiKey"> | null | undefined): string | undefined {
+/** Strict BYOK policy: only the signed-in user's own OpenRouter key is valid for AI usage. */
+export function resolveOpenRouterApiKeyForUser(
+  user: Pick<User, "openrouterApiKey"> | null | undefined,
+  _companyOpenRouterApiKey?: string | null
+): string | undefined {
   const raw = user?.openrouterApiKey;
   if (raw) {
     const k = normalizeOpenRouterApiKey(raw);
     if (k) return k;
   }
-  return getOpenRouterApiKey();
+  return undefined;
 }
 
 export function maskOpenRouterApiKeyHint(key: string): string {

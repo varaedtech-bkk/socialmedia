@@ -13,6 +13,7 @@ import {
   UserCheck,
   Mail,
   Zap,
+  Building2,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useState, useEffect, useMemo } from "react";
@@ -23,6 +24,8 @@ import { AdminNotificationSettingsTab } from "@/components/admin-notification-se
 import { AdminFeatureFlagsTab } from "@/components/admin-feature-flags-tab";
 import { AdminStatisticsTab } from "@/components/admin-statistics-tab";
 import { AdminUserManagementTab } from "@/components/admin-user-management-tab";
+import { AdminCompanyMembersTab } from "@/components/admin-company-members-tab";
+import { AdminSuperCompanyDirectoryTab } from "@/components/admin-super-company-directory-tab";
 import {
   canAccessAdminPanel,
   formatRoleLabel,
@@ -31,7 +34,7 @@ import {
   type AdminRole,
 } from "@/lib/admin-access";
 import { Badge } from "@/components/ui/badge";
-import { appCard, appPageCanvas } from "@/lib/app-surface";
+import { appCard, appPageCanvas, appPageEyebrow, appPageLead, appPageTitle, appSectionStack } from "@/lib/app-surface";
 import { AppLayout } from "@/components/app-layout";
 import { cn } from "@/lib/utils";
 
@@ -53,13 +56,13 @@ function ForbiddenAdmin() {
             <CardTitle className="text-lg font-semibold text-zinc-900">Admin area</CardTitle>
           </div>
           <CardDescription className="text-zinc-600">
-            This workspace is restricted to <strong>administrators</strong>. Your account is a standard member login.
+            This workspace is restricted to <strong>super admins or company owners</strong>. Your account is a
+            standard member login.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            If you need access to user management or billing controls, ask a super admin to grant you the{" "}
-            <strong>Admin</strong> role.
+            If you need access to user management or billing controls, ask your company owner or a super admin.
           </p>
           <Button asChild className="w-full">
             <Link href="/app">Return to dashboard</Link>
@@ -76,6 +79,9 @@ export default function AdminPage() {
   const [tab, setTab] = useState("statistics");
 
   const sessionRole = normalizeAdminRole(user?.role);
+  const companyRole = (user as any)?.companyMembership?.role as string | undefined;
+  const isPlatformSuperAdmin = sessionRole === "super_admin";
+  const isCompanyAdmin = companyRole === "owner";
 
   const {
     data: config,
@@ -88,7 +94,7 @@ export default function AdminPage() {
       const res = await apiRequest("GET", "/api/admin/config");
       return res.json();
     },
-    enabled: Boolean(user?.id) && canAccessAdminPanel(user?.role),
+    enabled: Boolean(user?.id) && isPlatformSuperAdmin,
     staleTime: 60_000,
   });
 
@@ -109,23 +115,23 @@ export default function AdminPage() {
       return raw.map((r) => normalizeAdminRole(String(r)));
     }
     return sessionRole === "super_admin"
-      ? ["user", "admin", "super_admin"]
-      : sessionRole === "admin"
-        ? ["user", "admin"]
-        : ["user"];
+      ? ["client", "super_admin"]
+      : ["client"];
   }, [config?.assignableRoles, sessionRole]);
 
   const visibleTabs = useMemo(() => {
+    if (isCompanyAdmin && !isPlatformSuperAdmin) return ["company"];
     const t: string[] = [];
     if (adminPermissionsInclude(perms, "analytics.view")) t.push("statistics");
     if (adminPermissionsInclude(perms, "users.view")) {
       t.push("users");
+      t.push("company");
       t.push("access");
     }
     if (adminPermissionsInclude(perms, "settings.view")) t.push("settings");
     if (adminPermissionsInclude(perms, "features.manage")) t.push("features");
     return t;
-  }, [perms]);
+  }, [isCompanyAdmin, isPlatformSuperAdmin, perms]);
 
   useEffect(() => {
     if (visibleTabs.length && !visibleTabs.includes(tab)) {
@@ -141,7 +147,7 @@ export default function AdminPage() {
     );
   }
 
-  if (!canAccessAdminPanel(user.role)) {
+  if (!canAccessAdminPanel(user.role, companyRole)) {
     return <ForbiddenAdmin />;
   }
 
@@ -156,20 +162,28 @@ export default function AdminPage() {
   const showStats = visibleTabs.includes("statistics");
   const showUsers = visibleTabs.includes("users");
   const showAccess = visibleTabs.includes("access");
+  const showCompany = visibleTabs.includes("company");
   const showSettings = visibleTabs.includes("settings");
   const showFeatures = visibleTabs.includes("features");
 
   return (
     <AppLayout shellWidth="admin" topBarTitle="Administration" topBarIcon={Settings}>
-      <div className="space-y-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="min-w-0 max-w-2xl">
-            <p className="text-sm leading-relaxed text-zinc-600 sm:text-base">
-              Users, access, notifications, and platform flags — aligned with Basic / Advance and Stripe billing.
-            </p>
-          </div>
-          <Card className={cn(appCard, "w-full shrink-0 lg:w-auto lg:max-w-sm")}>
-              <CardContent className="p-4 space-y-2">
+      <div className={appSectionStack}>
+        <div className="rounded-2xl border border-zinc-200/80 bg-white p-4 shadow-sm sm:p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0 max-w-2xl">
+              <p className={appPageEyebrow}>Workspace controls</p>
+              <h1 className={cn("mt-1.5", appPageTitle, "text-xl sm:text-2xl")}>
+                {isPlatformSuperAdmin ? "Platform administration" : "Company administration"}
+              </h1>
+              <p className={cn("mt-2", appPageLead)}>
+                {isPlatformSuperAdmin
+                  ? "Users, access, notifications, and platform flags - aligned with Basic / Advance and Stripe billing."
+                  : "Manage your company members, AI controls, and platform restrictions for your workspace."}
+              </p>
+            </div>
+            <Card className={cn(appCard, "w-full shrink-0 border-zinc-200/90 lg:w-auto lg:min-w-[19rem] lg:max-w-sm")}>
+              <CardContent className="space-y-2 p-4">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Your session</span>
                   <Badge variant="secondary">{formatRoleLabel(sessionRole)}</Badge>
@@ -206,6 +220,7 @@ export default function AdminPage() {
                 )}
               </CardContent>
             </Card>
+          </div>
         </div>
 
       <div>
@@ -221,18 +236,18 @@ export default function AdminPage() {
         <Tabs value={tab} onValueChange={setTab} className="space-y-6">
           <TabsList
             className={cn(
-              "grid h-auto w-full gap-1 rounded-lg border border-zinc-200/80 bg-zinc-100/80 p-1",
-              [showStats, showUsers, showAccess, showSettings, showFeatures].filter(Boolean).length <= 2
+              "grid h-auto w-full gap-1 rounded-xl border border-zinc-200/80 bg-zinc-100/70 p-1.5",
+              [showStats, showUsers, showCompany, showAccess, showSettings, showFeatures].filter(Boolean).length <= 2
                 ? "grid-cols-2 sm:max-w-lg"
-                : [showStats, showUsers, showAccess, showSettings, showFeatures].filter(Boolean).length === 3
+                : [showStats, showUsers, showCompany, showAccess, showSettings, showFeatures].filter(Boolean).length === 3
                   ? "grid-cols-3 sm:max-w-2xl"
-                  : "grid-cols-2 sm:grid-cols-3 lg:max-w-4xl lg:grid-cols-5",
+                  : "grid-cols-2 sm:grid-cols-3 lg:max-w-5xl lg:grid-cols-6",
             )}
           >
             {showStats && (
               <TabsTrigger
                 value="statistics"
-                className="gap-1.5 rounded-md py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-primary data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
+                className="gap-1.5 rounded-lg py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-zinc-900 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
               >
                 <BarChart3 className="h-4 w-4 shrink-0" />
                 <span>Overview</span>
@@ -241,16 +256,25 @@ export default function AdminPage() {
             {showUsers && (
               <TabsTrigger
                 value="users"
-                className="gap-1.5 rounded-md py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-primary data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
+                className="gap-1.5 rounded-lg py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-zinc-900 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
               >
                 <Users className="h-4 w-4 shrink-0" />
                 Users
               </TabsTrigger>
             )}
+            {showCompany && (
+              <TabsTrigger
+                value="company"
+                className="gap-1.5 rounded-lg py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-zinc-900 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
+              >
+                <Building2 className="h-4 w-4 shrink-0" />
+                Company
+              </TabsTrigger>
+            )}
             {showAccess && (
               <TabsTrigger
                 value="access"
-                className="gap-1.5 rounded-md py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-primary data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
+                className="gap-1.5 rounded-lg py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-zinc-900 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
               >
                 <UserCheck className="h-4 w-4 shrink-0" />
                 <span className="hidden sm:inline">Access</span>
@@ -260,7 +284,7 @@ export default function AdminPage() {
             {showSettings && (
               <TabsTrigger
                 value="settings"
-                className="gap-1.5 rounded-md py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-primary data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
+                className="gap-1.5 rounded-lg py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-zinc-900 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
               >
                 <Mail className="h-4 w-4 shrink-0" />
                 <span className="hidden sm:inline">Email</span>
@@ -270,7 +294,7 @@ export default function AdminPage() {
             {showFeatures && (
               <TabsTrigger
                 value="features"
-                className="gap-1.5 rounded-md py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-primary data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
+                className="gap-1.5 rounded-lg py-2.5 text-xs sm:text-sm data-[state=active]:bg-white data-[state=active]:font-medium data-[state=active]:text-zinc-900 data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-zinc-200/80"
               >
                 <Zap className="h-4 w-4 shrink-0" />
                 Flags
@@ -291,6 +315,12 @@ export default function AdminPage() {
                 assignableRoles={assignableRoles}
                 canCreateUsers={canCreateUsers}
               />
+            </TabsContent>
+          )}
+
+          {showCompany && (
+            <TabsContent value="company" className="mt-2 focus-visible:outline-none">
+              {isPlatformSuperAdmin ? <AdminSuperCompanyDirectoryTab /> : <AdminCompanyMembersTab />}
             </TabsContent>
           )}
 

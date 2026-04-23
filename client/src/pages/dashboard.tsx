@@ -18,6 +18,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { appCard } from "@/lib/app-surface";
 import { AppLayout } from "@/components/app-layout";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 type Subscription = {
   plan: string;
@@ -29,6 +30,10 @@ type Subscription = {
   /** Stored workspace package (Basic vs Advance); aligns with AI entitlements after Stripe upgrade. */
   packageTier?: string;
   advanceCheckoutAvailable?: boolean;
+  trialEligible?: boolean;
+  trialEndsAt?: string | null;
+  trialExpired?: boolean;
+  paymentRequired?: boolean;
 };
 
 export default function Dashboard() {
@@ -122,6 +127,18 @@ export default function Dashboard() {
   return (
     <AppLayout shellWidth="full" showBackLink={false}>
       <div>
+          {subscription?.paymentRequired && (
+            <Alert className="mb-6 border-rose-200/80 bg-rose-50/90">
+              <AlertTitle>Trial ended — payment required</AlertTitle>
+              <AlertDescription>
+                Your 7-day trial has ended. Continue using Advance AI features by completing payment in{" "}
+                <Link href="/billing" className="underline font-medium text-primary">
+                  Billing
+                </Link>
+                .
+              </AlertDescription>
+            </Alert>
+          )}
           <div className="mb-8">
             <div className="flex flex-col gap-6 rounded-xl border border-zinc-200/80 bg-white p-6 shadow-sm ring-1 ring-zinc-100/80 md:flex-row md:items-start md:justify-between md:p-8">
               <div>

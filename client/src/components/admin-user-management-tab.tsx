@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Loader2, Search, Plus, Edit, Trash2, Check, X } from "lucide-react";
+import { Loader2, Search, Plus, Edit, Trash2, Check, X, RotateCcw, Eraser } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useState, useEffect } from "react";
 import {
@@ -48,6 +48,7 @@ type AdminUserRow = {
   isActive: boolean;
   isApproved: boolean;
   packageTier: string;
+  deletedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -224,6 +225,11 @@ function UserTableRow({
   onDelete,
   isUpdating,
   isDeleting,
+  isDeletedView = false,
+  onRestore,
+  onPermanentDelete,
+  isRestoring = false,
+  isPermanentDeleting = false,
 }: {
   user: AdminUserRow;
   isEditing: boolean;
@@ -235,6 +241,11 @@ function UserTableRow({
   onDelete: () => void;
   isUpdating: boolean;
   isDeleting: boolean;
+  isDeletedView?: boolean;
+  onRestore?: () => void;
+  onPermanentDelete?: () => void;
+  isRestoring?: boolean;
+  isPermanentDeleting?: boolean;
 }) {
   const [role, setRole] = useState<AdminRole>(normalizeAdminRole(user.role));
   const [isActive, setIsActive] = useState(user.isActive);
@@ -320,12 +331,27 @@ function UserTableRow({
         )}
       </TableCell>
       <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-        {new Date(user.createdAt).toLocaleDateString()}
+        {isDeletedView && user.deletedAt
+          ? new Date(user.deletedAt).toLocaleDateString()
+          : new Date(user.createdAt).toLocaleDateString()}
       </TableCell>
       <TableCell className="text-right">
         {canEdit && (
           <div className="flex items-center justify-end gap-2">
-            {isEditing ? (
+            {isDeletedView ? (
+              <>
+                <Button size="sm" variant="ghost" onClick={onRestore} disabled={isRestoring}>
+                  {isRestoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={onPermanentDelete} disabled={isPermanentDeleting}>
+                  {isPermanentDeleting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Eraser className="h-4 w-4 text-destructive" />
+                  )}
+                </Button>
+              </>
+            ) : isEditing ? (
               <>
                 <Button size="sm" variant="ghost" onClick={handleSave} disabled={isUpdating}>
                   {isUpdating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
@@ -369,16 +395,18 @@ export function AdminUserManagementTab({
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [createFormKey, setCreateFormKey] = useState(0);
   const [editingUserId, setEditingUserId] = useState<number | null>(null);
+  const [deletedView, setDeletedView] = useState<"active" | "deleted">("active");
 
   const { data, isLoading } = useQuery<{
     users: AdminUserRow[];
     pagination: { page: number; total: number; totalPages: number };
   }>({
-    queryKey: ["admin", "users", viewerId, page, search, roleFilter],
+    queryKey: ["admin", "users", viewerId, page, search, roleFilter, deletedView],
     queryFn: async () => {
       const params = new URLSearchParams({
         page: page.toString(),
         limit: "20",
+        deleted: deletedView === "deleted" ? "true" : "false",
         ...(search && { search }),
         ...(roleFilter !== "all" && { role: roleFilter }),
       });
@@ -414,6 +442,34 @@ export function AdminUserManagementTab({
     },
     onError: (error: Error) => {
       toast({ title: "Delete failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const restoreUserMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/admin/users/${id}/restore`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      toast({ title: "User restored" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Restore failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const permanentDeleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/admin/users/${id}/permanent`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      toast({ title: "User permanently deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Permanent delete failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -475,8 +531,24 @@ export function AdminUserManagementTab({
               <SelectItem value="super_admin">Super admin</SelectItem>
             </SelectContent>
           </Select>
+          <Select
+            value={deletedView}
+            onValueChange={(v) => {
+              setDeletedView(v as "active" | "deleted");
+              setPage(1);
+              setEditingUserId(null);
+            }}
+          >
+            <SelectTrigger className="w-full sm:w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="active">Active users</SelectItem>
+              <SelectItem value="deleted">Deleted users</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
-        {canCreateUsers && (
+        {canCreateUsers && deletedView === "active" && (
           <Dialog
             open={isCreateDialogOpen}
             onOpenChange={(open) => {
@@ -520,7 +592,9 @@ export function AdminUserManagementTab({
         <CardHeader>
           <CardTitle className="text-lg font-semibold text-zinc-900">Directory</CardTitle>
           <CardDescription className="text-zinc-600">
-            Roles control admin panel access; packages control AI (Advance) vs posting-only (Basic).
+            {deletedView === "active"
+              ? "Roles control admin panel access; packages control AI (Advance) vs posting-only (Basic)."
+              : "Soft-deleted accounts can be restored or permanently removed."}
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0 sm:p-6">
@@ -532,7 +606,7 @@ export function AdminUserManagementTab({
                   <TableHead>Access role</TableHead>
                   <TableHead>Package</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Joined</TableHead>
+                  <TableHead>{deletedView === "deleted" ? "Deleted" : "Joined"}</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -560,6 +634,11 @@ export function AdminUserManagementTab({
                         onDelete={() => deleteUserMutation.mutate(user.id)}
                         isUpdating={updateUserMutation.isPending}
                         isDeleting={deleteUserMutation.isPending}
+                        isDeletedView={deletedView === "deleted"}
+                        onRestore={() => restoreUserMutation.mutate(user.id)}
+                        onPermanentDelete={() => permanentDeleteMutation.mutate(user.id)}
+                        isRestoring={restoreUserMutation.isPending}
+                        isPermanentDeleting={permanentDeleteMutation.isPending}
                       />
                     );
                   })

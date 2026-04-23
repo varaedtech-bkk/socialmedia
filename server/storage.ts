@@ -1,4 +1,14 @@
-import { User, InsertUser, Post, InsertPost, SocialAccount, type AccessRequest } from "@shared/schema";
+import {
+  User,
+  InsertUser,
+  Post,
+  InsertPost,
+  SocialAccount,
+  type AccessRequest,
+  type Company,
+  type CompanyMembership,
+  type AgentChannelUser,
+} from "@shared/schema";
 import session from "express-session";
 import createMemoryStore from "memorystore";
 
@@ -64,6 +74,43 @@ export interface IStorage {
  getUser(id: number): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
+  updateUserProfile(userId: number, updates: { username: string; email: string }): Promise<User>;
+  updateUserPasswordHash(userId: number, passwordHash: string): Promise<User>;
+  getUserCompanyContext(userId: number): Promise<{
+    company: Company;
+    membership: CompanyMembership;
+  } | null>;
+  setCompanyMembershipControls(
+    companyId: number,
+    targetUserId: number,
+    actorUserId: number,
+    updates: {
+      aiEnabled?: boolean;
+      allowedPlatforms?: string[];
+      role?: "owner" | "moderator";
+      isActive?: boolean;
+    }
+  ): Promise<CompanyMembership>;
+  getUserByAgentChannelIdentity(channel: "telegram" | "whatsapp", channelUserId: string): Promise<User | undefined>;
+  upsertAgentChannelUserLink(params: {
+    companyId: number;
+    userId: number;
+    channel: "telegram" | "whatsapp";
+    channelUserId: string;
+    isActive?: boolean;
+  }): Promise<AgentChannelUser>;
+  listCompanyAgentChannelUsers(companyId: number): Promise<Array<{
+    id: number;
+    channel: string;
+    channelUserId: string;
+    isActive: boolean;
+    userId: number;
+    username: string;
+    email: string;
+    updatedAt: Date;
+  }>>;
+  getAgentChannelUserById(id: number): Promise<AgentChannelUser | undefined>;
+  updateAgentChannelUserActive(id: number, isActive: boolean): Promise<AgentChannelUser>;
 
   updateUserFacebookPersonalToken(userId: number, token: string): Promise<User>;
   updateUserFacebookPageToken(
@@ -137,8 +184,10 @@ export interface IStorage {
     fullName: string;
     company?: string | null;
     message?: string | null;
+    deviceHash?: string | null;
     packageTierRequested: "basic" | "advance";
   }): Promise<AccessRequest>;
+  countApprovedAccessRequestsByDeviceHash(deviceHash: string): Promise<number>;
 
   listAccessRequests(status?: string): Promise<AccessRequest[]>;
 
@@ -146,7 +195,16 @@ export interface IStorage {
 
   updateAccessRequest(
     id: number,
-    data: { status: string; approvedUserId?: number | null }
+    data: {
+      status?: string;
+      approvedUserId?: number | null;
+      paymentStatus?: "pending" | "trialing" | "paid" | "failed";
+      stripeCheckoutSessionId?: string | null;
+      stripeCustomerId?: string | null;
+      stripeSubscriptionId?: string | null;
+      trialEndsAt?: Date | null;
+      paidAt?: Date | null;
+    }
   ): Promise<AccessRequest>;
 
   getAllUsers(): Promise<User[]>;
@@ -326,13 +384,87 @@ export class MemStorage implements IStorage {
       isActive: true,
       isDeleted: false,
       deletedAt: null,
-      role: (insertUser as any).role || "user",
+      role: (insertUser as any).role || "client",
       permissions: (insertUser as any).permissions || [],
       createdAt: now,
       updatedAt: now,
     };
     this.users.set(id, user);
     return user;
+  }
+
+  async updateUserProfile(userId: number, updates: { username: string; email: string }): Promise<User> {
+    const user = await this.validateUser(userId);
+    const updatedUser = {
+      ...user,
+      username: updates.username,
+      email: updates.email,
+      updatedAt: new Date(),
+    };
+    this.users.set(userId, updatedUser);
+    return updatedUser;
+  }
+
+  async updateUserPasswordHash(userId: number, passwordHash: string): Promise<User> {
+    const user = await this.validateUser(userId);
+    const updatedUser = {
+      ...user,
+      password: passwordHash,
+      updatedAt: new Date(),
+    };
+    this.users.set(userId, updatedUser);
+    return updatedUser;
+  }
+
+  async getUserCompanyContext(_userId: number): Promise<{ company: Company; membership: CompanyMembership } | null> {
+    return null;
+  }
+
+  async setCompanyMembershipControls(
+    _companyId: number,
+    _targetUserId: number,
+    _actorUserId: number,
+    _updates: {
+      aiEnabled?: boolean;
+      allowedPlatforms?: string[];
+      role?: "owner" | "moderator";
+      isActive?: boolean;
+    }
+  ): Promise<CompanyMembership> {
+    throw new Error("Company membership controls are unavailable in memory mode");
+  }
+  async getUserByAgentChannelIdentity(
+    _channel: "telegram" | "whatsapp",
+    _channelUserId: string
+  ): Promise<User | undefined> {
+    return undefined;
+  }
+  async upsertAgentChannelUserLink(_params: {
+    companyId: number;
+    userId: number;
+    channel: "telegram" | "whatsapp";
+    channelUserId: string;
+    isActive?: boolean;
+  }): Promise<AgentChannelUser> {
+    throw new Error("Agent channel linking is unavailable in memory mode");
+  }
+  async listCompanyAgentChannelUsers(_companyId: number): Promise<Array<{
+    id: number;
+    channel: string;
+    channelUserId: string;
+    isActive: boolean;
+    userId: number;
+    username: string;
+    email: string;
+    updatedAt: Date;
+  }>> {
+    return [];
+  }
+  async getAgentChannelUserById(_id: number): Promise<AgentChannelUser | undefined> {
+    return undefined;
+  }
+  async updateAgentChannelUserActive(_id: number, _isActive: boolean): Promise<AgentChannelUser> {
+    throw new Error("Agent channel linking is unavailable in memory mode");
   }
 
   async updateUserFacebookPersonalToken(
@@ -521,6 +653,7 @@ export class MemStorage implements IStorage {
     fullName: string;
     company?: string | null;
     message?: string | null;
+    deviceHash?: string | null;
     packageTierRequested: "basic" | "advance";
   }): Promise<AccessRequest> {
     const now = new Date();
@@ -530,8 +663,15 @@ export class MemStorage implements IStorage {
       fullName: data.fullName,
       company: data.company ?? null,
       message: data.message ?? null,
+      deviceHash: data.deviceHash ?? null,
       packageTierRequested: data.packageTierRequested,
       status: "pending",
+      paymentStatus: "pending",
+      stripeCheckoutSessionId: null,
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      trialEndsAt: null,
+      paidAt: null,
       approvedUserId: null,
       createdAt: now,
       updatedAt: now,
@@ -551,20 +691,49 @@ export class MemStorage implements IStorage {
 
   async updateAccessRequest(
     id: number,
-    data: { status: string; approvedUserId?: number | null }
+    data: {
+      status?: string;
+      approvedUserId?: number | null;
+      paymentStatus?: "pending" | "trialing" | "paid" | "failed";
+      stripeCheckoutSessionId?: string | null;
+      stripeCustomerId?: string | null;
+      stripeSubscriptionId?: string | null;
+      trialEndsAt?: Date | null;
+      paidAt?: Date | null;
+    }
   ): Promise<AccessRequest> {
     const idx = this.accessRequests.findIndex((r) => r.id === id);
     if (idx < 0) throw new Error("Access request not found");
     const prev = this.accessRequests[idx]!;
     const next: AccessRequest = {
       ...prev,
-      status: data.status,
+      status: data.status ?? prev.status,
       approvedUserId:
         data.approvedUserId === undefined ? prev.approvedUserId : data.approvedUserId,
+      paymentStatus: data.paymentStatus ?? prev.paymentStatus,
+      stripeCheckoutSessionId:
+        data.stripeCheckoutSessionId === undefined
+          ? prev.stripeCheckoutSessionId
+          : data.stripeCheckoutSessionId,
+      stripeCustomerId:
+        data.stripeCustomerId === undefined ? prev.stripeCustomerId : data.stripeCustomerId,
+      stripeSubscriptionId:
+        data.stripeSubscriptionId === undefined
+          ? prev.stripeSubscriptionId
+          : data.stripeSubscriptionId,
+      trialEndsAt: data.trialEndsAt === undefined ? prev.trialEndsAt : data.trialEndsAt,
+      paidAt: data.paidAt === undefined ? prev.paidAt : data.paidAt,
       updatedAt: new Date(),
     };
     this.accessRequests[idx] = next;
     return next;
+  }
+
+  async countApprovedAccessRequestsByDeviceHash(deviceHash: string): Promise<number> {
+    if (!deviceHash) return 0;
+    return this.accessRequests.filter(
+      (r) => r.deviceHash === deviceHash && r.status === "approved"
+    ).length;
   }
 
   async getAllUsers(): Promise<User[]> {

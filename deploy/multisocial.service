@@ -1,0 +1,28 @@
+[Unit]
+Description=MultiSocial Studio - Social Media Management Platform
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/multisocial
+EnvironmentFile=/var/www/multisocial/.env.production
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=multisocial
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/www/multisocial/uploads
+
+[Install]
+WantedBy=multi-user.target
+

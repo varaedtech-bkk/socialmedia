@@ -25,25 +25,25 @@ export interface AppLayoutProps {
 function topBarInnerClass(shellWidth: AppLayoutShellWidth) {
   switch (shellWidth) {
     case "wide":
-      return appShellWide("flex flex-wrap items-center justify-between gap-3 py-3.5");
+      return appShellWide("flex flex-wrap items-center justify-between gap-3 py-4");
     case "full":
       return cn(
-        "container mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 md:px-6",
+        "container mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-4 md:px-6 xl:px-10",
       );
     case "admin":
-      return appShellAdmin("flex flex-wrap items-center justify-between gap-3 py-3.5");
+      return appShellAdmin("flex flex-wrap items-center justify-between gap-3 py-4");
     default:
-      return appShellNarrow("flex flex-wrap items-center justify-between gap-3 py-3.5");
+      return appShellNarrow("flex flex-wrap items-center justify-between gap-3 py-4");
   }
 }
 
 function mainShellClass(shellWidth: AppLayoutShellWidth) {
-  const pad = "flex-1 min-h-0 overflow-y-auto py-6 pt-14 md:pt-6 lg:py-8";
+  const pad = "flex-1 min-h-0 overflow-y-auto py-7 pt-14 md:pt-7 lg:py-9";
   switch (shellWidth) {
     case "wide":
       return appShellWide(pad);
     case "full":
-      return cn("container mx-auto max-w-7xl flex-1 min-h-0 overflow-y-auto px-4 py-6 pt-14 md:px-6 md:pt-6 lg:py-8");
+      return cn("container mx-auto max-w-7xl flex-1 min-h-0 overflow-y-auto px-4 py-7 pt-14 md:px-6 md:pt-7 lg:py-9 xl:px-10");
     case "admin":
       return appShellAdmin(pad);
     default:
@@ -105,10 +105,12 @@ export function AppLayout({
                 </span>
               )}
               {(topBarTitle || TopBarIcon) && (
-                <div className="flex min-w-0 items-center gap-2 border-l border-zinc-200 pl-2 sm:pl-3">
+                <div className="flex min-w-0 items-center gap-2.5 border-l border-zinc-200 pl-2.5 sm:pl-3.5">
                   {TopBarIcon ? <TopBarIcon className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden /> : null}
                   {topBarTitle ? (
-                    <span className="truncate text-sm font-medium text-zinc-800 sm:text-base">{topBarTitle}</span>
+                    <span className="truncate text-sm font-medium tracking-tight text-zinc-800 sm:text-[15px]">
+                      {topBarTitle}
+                    </span>
                   ) : null}
                 </div>
               )}

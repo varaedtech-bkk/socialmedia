@@ -66,7 +66,7 @@ export default function BillingSuccessPage() {
         {sessionId && data?.ok && (
           <p className="text-muted-foreground">
             Your account is on <strong className="text-foreground">Advance</strong>. You can use AI features after
-            adding an OpenRouter key under Integrations (or using a platform key).
+            adding your OpenRouter key under Integrations.
           </p>
         )}
 

@@ -2,76 +2,87 @@
 
 ## Overview
 
-The admin system is a comprehensive, config-based management interface with role-based access control (RBAC), user management, feature flags, and system analytics.
+The admin system combines platform-level controls and company-level controls under one `/admin` route with role-aware visibility.
 
-## Features
+It is built on:
 
-### 1. Role-Based Access Control (RBAC)
+- Config-based permissions (`server/admin-config.ts`)
+- RBAC middleware (`server/middleware/rbac.ts`)
+- Route-level checks in `server/routes-admin.ts`
+- Role-aware UI in `client/src/pages/admin-page.tsx`
 
-The system supports three roles with hierarchical permissions:
+## RBAC Model (Current)
 
-- **User** (`user`): Standard user with basic access
-- **Admin** (`admin`): Administrator with management capabilities
-- **Super Admin** (`super_admin`): Full system access with all permissions
+### Global Roles
 
-### 2. Admin Dashboard
+- `super_admin`
+- `client`
 
-Accessible at `/admin`, the dashboard includes:
+### Company Membership Roles
 
-- **Statistics Tab**: System-wide metrics and analytics
-- **Users Tab**: User management with search, filtering, and CRUD operations
-- **Features Tab**: Feature flag management
+- `owner`
+- `moderator`
 
-### 3. User Management
+### Access Behavior
 
-- View all users with pagination
-- Search users by username or email
-- Filter by role
-- Create new users
-- Edit user roles and permissions
-- Activate/deactivate users
-- Soft delete users
+- `super_admin`: full platform admin access
+- `client + owner`: company admin access (company tab, member controls)
+- `client + moderator`: restricted access (cannot manage admin-only controls)
 
-### 4. Feature Flags
+## Admin Surface
 
-- Toggle subscription features
-- Enable/disable post quotas
-- Control Stripe payment processing
-- All changes take effect immediately
+### Platform Admin (super admin)
 
-### 5. System Statistics
+Primary capabilities:
 
-- User counts (total, active, by role)
-- Post statistics (total, published, scheduled)
-- Subscription metrics
-- Role distribution
+- User lifecycle management (create, update, soft delete, restore, permanent delete)
+- Access request approvals/rejections
+- Feature flag management
+- Statistics and system-level configuration
+- Super-company overview
 
-## Configuration
+Key endpoints:
 
-### Admin Config (`server/admin-config.ts`)
+- `GET /api/admin/users`
+- `POST /api/admin/users`
+- `PATCH /api/admin/users/:id`
+- `DELETE /api/admin/users/:id`
+- `POST /api/admin/users/:id/restore`
+- `DELETE /api/admin/users/:id/permanent`
+- `GET /api/admin/access-requests`
+- `POST /api/admin/access-requests/:id/approve`
+- `POST /api/admin/access-requests/:id/reject`
+- `GET /api/admin/features`
+- `POST /api/admin/features/:key`
+- `GET /api/admin/statistics`
+- `GET /api/admin/super/companies-overview`
+- `GET /api/admin/config`
 
-All admin features are defined in a centralized configuration:
+### Company Admin (owner)
 
-```typescript
-export const ROLE_CONFIG: Record<UserRole, RoleConfig> = {
-  user: { ... },
-  admin: { ... },
-  super_admin: { ... }
-};
+Primary capabilities:
 
-export const ADMIN_FEATURES: AdminFeature[] = [
-  { id: "user-management", ... },
-  { id: "feature-flags", ... },
-  ...
-];
-```
+- Manage company members and controls
+- Toggle member-level AI/platform permissions
+- Manage company-level OpenRouter reference key
+- Manage linked channel users
+- Deactivate/reactivate linked Telegram/WhatsApp mappings (kill switch)
 
-### Permissions
+Key endpoints:
 
-Permissions are granular and can be assigned to roles:
+- `GET /api/admin/company/members`
+- `PATCH /api/admin/company/members/:userId`
+- `PUT /api/admin/company/openrouter-key`
+- `GET /api/admin/company/channel-users`
+- `PATCH /api/admin/company/channel-users/:id`
 
-- `users.view`, `users.create`, `users.edit`, `users.delete`
-- `users.manage_roles`
+## Permissions Configuration
+
+Defined in `server/admin-config.ts`.
+
+Global permission keys include:
+
+- `users.view`, `users.create`, `users.edit`, `users.delete`, `users.manage_roles`
 - `features.manage`
 - `settings.view`, `settings.edit`
 - `analytics.view`
@@ -79,183 +90,80 @@ Permissions are granular and can be assigned to roles:
 - `subscriptions.manage`
 - `system.manage`
 
-## API Endpoints
+`super_admin` receives the full configured permission set. `client` has no platform-admin permissions by default.
 
-### User Management
+## Middleware and Enforcement
 
-- `GET /api/admin/users` - List users (paginated, searchable, filterable)
-- `GET /api/admin/users/:id` - Get user details
-- `POST /api/admin/users` - Create new user
-- `PATCH /api/admin/users/:id` - Update user
-- `DELETE /api/admin/users/:id` - Soft delete user
+Primary middleware:
 
-### Feature Flags
+- `requireAdmin()`
+- `requirePermission(permission)`
+- `requireAnyPermission(...permissions)`
 
-- `GET /api/admin/features` - List all feature flags
-- `POST /api/admin/features/:key` - Update feature flag
+Additional enforcement is implemented inside handlers for ownership checks and company-role constraints.
 
-### Statistics
+## Frontend Admin UX
 
-- `GET /api/admin/statistics` - Get system statistics
+`client/src/pages/admin-page.tsx` renders role-specific tabs and content:
 
-### Configuration
+- Super admin sees platform tabs (overview/users/access/settings/features)
+- Company owner sees company administration tab
+- Non-eligible roles receive forbidden admin state
 
-- `GET /api/admin/config` - Get admin configuration (roles, permissions, available features)
+Related components:
 
-## Security
+- `client/src/components/admin-user-management-tab.tsx`
+- `client/src/components/admin-access-requests-tab.tsx`
+- `client/src/components/admin-feature-flags-tab.tsx`
+- `client/src/components/admin-statistics-tab.tsx`
+- `client/src/components/admin-company-members-tab.tsx`
+- `client/src/components/admin-super-company-directory-tab.tsx`
 
-### Middleware
+## Data Notes
 
-All admin routes are protected with RBAC middleware:
+- Global role is stored on `users.role`
+- Company role is stored on `company_memberships.role`
+- Channel user mappings are stored in `agent_channel_users` with `isActive` state
+- User lifecycle supports soft delete and restore flows
+- Audit events are captured via `audit_logs`
 
-- `requireAdmin()` - Requires admin or super_admin role
-- `requirePermission(permission)` - Requires specific permission
-- `requireAnyPermission(...permissions)` - Requires any of the specified permissions
+## Operations
 
-### Access Control
-
-- Routes check user roles and permissions before allowing access
-- Users cannot delete their own accounts
-- Role hierarchy prevents lower roles from managing higher roles
-
-## Database Schema
-
-### Users Table
-
-Added fields:
-- `role`: `text` - User role (user, admin, super_admin)
-- `permissions`: `json` - Array of custom permission strings
-
-### App Settings Table
-
-Stores feature flags and system configuration:
-- `key`: Feature flag identifier
-- `value`: Boolean or JSON value
-- `description`: Human-readable description
-- `updated_by`: User who last updated
-- `updated_at`: Last update timestamp
-
-## Usage
-
-### Setting Up First Super Admin
+### Set up super admin
 
 ```bash
-# Create a user first (via registration or manage-users script)
-yarn create-superuser
-
-# Then set them as super admin
-yarn set-super-admin <username>
+npm run create-superuser
+npm run set-super-admin <username>
 ```
 
-### Managing Users
+### Migrate schema
 
-1. Navigate to `/admin`
-2. Click on "Users" tab
-3. Use search and filters to find users
-4. Click edit icon to modify user
-5. Change role, activate/deactivate, or delete
+```bash
+npm run db:migrate
+```
 
-### Managing Feature Flags
+### Seed demo accounts
 
-1. Navigate to `/admin`
-2. Click on "Features" tab
-3. Toggle switches to enable/disable features
-4. Changes take effect immediately
-
-### Viewing Statistics
-
-1. Navigate to `/admin`
-2. View the "Statistics" tab (default)
-3. See real-time system metrics
-
-## Frontend Components
-
-### Admin Page (`client/src/pages/admin-page.tsx`)
-
-Main admin interface with:
-- Tabbed navigation
-- Dynamic feature loading based on permissions
-- Real-time updates
-- Error handling and loading states
-
-### Components
-
-- `FeatureFlagsTab`: Feature flag management
-- `UserManagementTab`: User CRUD operations
-- `StatisticsTab`: System statistics display
-- `UserCard`: Individual user card with inline editing
-- `CreateUserForm`: User creation dialog
-
-## Configuration-Based Design
-
-All admin features are defined in configuration files:
-
-1. **`server/admin-config.ts`**: Roles, permissions, and feature definitions
-2. **`server/feature-config.ts`**: Feature flag management
-3. **`server/middleware/rbac.ts`**: Access control middleware
-
-This makes it easy to:
-- Add new roles
-- Modify permissions
-- Add new features
-- Change access rules
-
-## Extending the System
-
-### Adding a New Role
-
-1. Update `ROLE_CONFIG` in `server/admin-config.ts`
-2. Add role to database enum (if using enum)
-3. Update UI to show new role
-
-### Adding a New Permission
-
-1. Add permission to `Permission` type in `server/admin-config.ts`
-2. Assign to roles in `ROLE_CONFIG`
-3. Use in middleware: `requirePermission("new.permission")`
-
-### Adding a New Admin Feature
-
-1. Add feature to `ADMIN_FEATURES` array
-2. Create API endpoint in `server/routes-admin.ts`
-3. Add UI component/tab in admin page
-4. Update permissions as needed
-
-## Best Practices
-
-1. **Always use middleware**: Don't manually check permissions in route handlers
-2. **Follow role hierarchy**: Lower roles shouldn't manage higher roles
-3. **Soft delete**: Use soft deletes for users to maintain data integrity
-4. **Cache feature flags**: Feature flags are cached for performance
-5. **Validate inputs**: Use Zod schemas for all inputs
-6. **Remove passwords**: Never return passwords in API responses
+```bash
+npm run seed:demo-accounts
+```
 
 ## Troubleshooting
 
-### User can't access admin panel
+### Owner cannot access company admin
 
-- Check user role: `SELECT role FROM users WHERE id = ?`
-- Verify role is `admin` or `super_admin`
-- Check `canAccessAdmin()` function in `admin-config.ts`
+- Confirm user has active `company_memberships` row with role `owner`
+- Confirm session user role is `client` or `super_admin`
+- Re-seed demo accounts if testing locally
 
-### Permission denied errors
+### Super admin cannot access platform admin
 
-- Check user's role and permissions
-- Verify permission is assigned to role in `ROLE_CONFIG`
-- Check middleware is correctly applied
+- Confirm `users.role = 'super_admin'`
+- Verify `/api/admin/config` returns expected permissions
 
-### Feature flags not updating
+### Feature flags appear stale
 
-- Check feature flag cache is refreshed
-- Verify database update succeeded
-- Check `updateFeatureFlag()` function logs
+- Re-check `app_settings` rows
+- Verify update endpoint returns success
 
-## Migration Notes
-
-After deploying this update:
-
-1. Run database migration: `yarn db:push`
-2. Set first super admin: `yarn set-super-admin <username>`
-3. Existing users default to `user` role
-4. Feature flags are auto-initialized on server startup
 

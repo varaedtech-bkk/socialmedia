@@ -6,6 +6,7 @@ import {
   timestamp,
   json,
   index,
+  uniqueIndex,
   boolean,
   date,
 } from "drizzle-orm/pg-core";
@@ -61,7 +62,7 @@ export const users = pgTable(
     isActive: boolean("is_active").default(true),
     isDeleted: boolean("is_deleted").default(false),  // New soft delete field
     deletedAt: timestamp("deleted_at").default(sql`null`),  // New soft delete field
-    role: text("role").notNull().default("user"), // 'user', 'admin', 'super_admin'
+    role: text("role").notNull().default("client"), // 'client' | 'super_admin'
     permissions: json("permissions").$type<string[]>().default(sql`'[]'::json`), // Array of permission strings
 
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -74,6 +75,98 @@ export const users = pgTable(
   })
 );
 
+export const companies = pgTable(
+  "companies",
+  {
+    id: serial("id").primaryKey(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull().unique(),
+    packageTier: text("package_tier").notNull().default("basic"),
+    /** Optional company-level OpenRouter key fallback for members. */
+    openrouterApiKey: text("openrouter_api_key").default(sql`null`),
+    ownerUserId: integer("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    slugIdx: index("companies_slug_idx").on(table.slug),
+    ownerIdx: index("companies_owner_user_id_idx").on(table.ownerUserId),
+  })
+);
+
+export const companyMemberships = pgTable(
+  "company_memberships",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role").notNull().default("moderator"), // owner | moderator
+    aiEnabled: boolean("ai_enabled").notNull().default(true),
+    /** Per-member platform allowlist for connect/post checks. */
+    allowedPlatforms: json("allowed_platforms").$type<string[]>().notNull().default([]),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    companyUserUniqueIdx: uniqueIndex("company_memberships_company_user_unique").on(table.companyId, table.userId),
+    userIdx: index("company_memberships_user_idx").on(table.userId),
+  })
+);
+
+export const auditLogs = pgTable(
+  "audit_logs",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id").references(() => companies.id, { onDelete: "cascade" }),
+    changedByUserId: integer("changed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    targetUserId: integer("target_user_id").references(() => users.id, { onDelete: "set null" }),
+    action: text("action").notNull(),
+    oldValue: json("old_value").default(sql`null`),
+    newValue: json("new_value").default(sql`null`),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    companyCreatedIdx: index("audit_logs_company_created_idx").on(table.companyId, table.createdAt),
+    targetIdx: index("audit_logs_target_user_idx").on(table.targetUserId),
+  })
+);
+
+export const agentChannelUsers = pgTable(
+  "agent_channel_users",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(), // telegram | whatsapp
+    channelUserId: text("channel_user_id").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    channelIdentityUnique: uniqueIndex("agent_channel_users_channel_identity_unique").on(
+      table.channel,
+      table.channelUserId,
+    ),
+    companyUserChannelUnique: uniqueIndex("agent_channel_users_company_user_channel_unique").on(
+      table.companyId,
+      table.userId,
+      table.channel,
+    ),
+    companyIdx: index("agent_channel_users_company_idx").on(table.companyId),
+    userIdx: index("agent_channel_users_user_idx").on(table.userId),
+  })
+);
+
 /** Prospective clients: purchase / interest → super admin notified → approve creates user */
 export const accessRequests = pgTable(
   "access_requests",
@@ -83,8 +176,15 @@ export const accessRequests = pgTable(
     fullName: text("full_name").notNull().default(""),
     company: text("company").default(sql`null`),
     message: text("message").default(sql`null`),
+    deviceHash: text("device_hash").default(sql`null`),
     packageTierRequested: text("package_tier_requested").notNull().default("basic"),
     status: text("status").notNull().default("pending"),
+    paymentStatus: text("payment_status").notNull().default("pending"),
+    stripeCheckoutSessionId: text("stripe_checkout_session_id").default(sql`null`),
+    stripeCustomerId: text("stripe_customer_id").default(sql`null`),
+    stripeSubscriptionId: text("stripe_subscription_id").default(sql`null`),
+    trialEndsAt: timestamp("trial_ends_at").default(sql`null`),
+    paidAt: timestamp("paid_at").default(sql`null`),
     approvedUserId: integer("approved_user_id").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -391,3 +491,9 @@ export type AccessRequest = typeof accessRequests.$inferSelect;
 
 export const packageTierEnum = z.enum(["basic", "advance"]);
 export type PackageTier = z.infer<typeof packageTierEnum>;
+export const companyRoleEnum = z.enum(["owner", "moderator"]);
+export type CompanyRole = z.infer<typeof companyRoleEnum>;
+export type Company = typeof companies.$inferSelect;
+export type CompanyMembership = typeof companyMemberships.$inferSelect;
+export type AuditLog = typeof auditLogs.$inferSelect;
+export type AgentChannelUser = typeof agentChannelUsers.$inferSelect;

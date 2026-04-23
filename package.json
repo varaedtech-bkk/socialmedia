@@ -9,11 +9,19 @@
     "start": "NODE_ENV=production node dist/index.js",
     "check": "tsc",
     "db:push": "drizzle-kit push",
-    "db:migrate": "drizzle-kit migrate",
+    "db:migrate": "tsx scripts/ensure-incremental-schema.ts",
+    "db:ensure-incremental": "tsx scripts/ensure-incremental-schema.ts",
+    "seed:demo-accounts": "tsx scripts/seed-demo-accounts.ts",
     "create-superuser": "tsx scripts/create-superuser.ts",
     "manage-users": "tsx scripts/manage-users.ts",
     "set-super-admin": "tsx scripts/set-super-admin.ts",
-    "openrouter:test": "tsx scripts/test-openrouter-api.ts"
+    "openrouter:test": "tsx scripts/test-openrouter-api.ts",
+    "predeploy:verify": "tsx scripts/predeploy-verify.ts",
+    "test:api": "node --test tests/api.test.mjs",
+    "test:rbac": "node --test tests/rbac.test.mjs",
+    "test:db": "node --test tests/db.test.mjs",
+    "test:frontend": "node --test tests/frontend-smoke.test.mjs",
+    "test:deploy": "npm run test:api && npm run test:rbac && npm run test:db && npm run test:frontend"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",

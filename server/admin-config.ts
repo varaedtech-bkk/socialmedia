@@ -5,7 +5,7 @@
  * All admin features are defined here and can be easily toggled or extended.
  */
 
-export type UserRole = "user" | "admin" | "super_admin";
+export type UserRole = "client" | "super_admin";
 
 export type Permission = 
   | "users.view"
@@ -35,28 +35,13 @@ export interface RoleConfig {
  * This is the single source of truth for all roles and permissions
  */
 export const ROLE_CONFIG: Record<UserRole, RoleConfig> = {
-  user: {
-    role: "user",
-    label: "User",
-    description: "Standard user with basic access",
+  client: {
+    role: "client",
+    label: "Client",
+    description: "Client user with workspace access only",
     permissions: [],
     canManageRoles: false,
     canAccessAdmin: false,
-  },
-  admin: {
-    role: "admin",
-    label: "Admin",
-    description: "Administrator with management capabilities",
-    permissions: [
-      "users.view",
-      "users.edit",
-      "features.manage",
-      "settings.view",
-      "analytics.view",
-      "posts.moderate",
-    ],
-    canManageRoles: false,
-    canAccessAdmin: true,
   },
   super_admin: {
     role: "super_admin",
@@ -204,9 +189,8 @@ export function canManageRoles(role: UserRole): boolean {
  */
 export function getAssignableRoles(currentUserRole: UserRole): UserRole[] {
   const roleHierarchy: Record<UserRole, number> = {
-    user: 1,
-    admin: 2,
-    super_admin: 3,
+    client: 1,
+    super_admin: 2,
   };
 
   const currentLevel = roleHierarchy[currentUserRole] || 0;

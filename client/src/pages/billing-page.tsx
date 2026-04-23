@@ -22,11 +22,16 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { canAccessAdminPanel } from "@/lib/admin-access";
-import { appCard, appCardElevated } from "@/lib/app-surface";
+import { appCard, appCardElevated, appPageLead, appPageTitle, appSectionStack } from "@/lib/app-surface";
 import { AppLayout } from "@/components/app-layout";
 
 type BillingConfig = {
   advanceCheckoutAvailable: boolean;
+  trialDays?: number;
+  stripe?: {
+    missingKeys?: string[];
+    webhookPath?: string;
+  };
 };
 
 type SubscriptionPayload = {
@@ -38,12 +43,16 @@ type SubscriptionPayload = {
   featureDisabled?: boolean;
   packageTier?: string;
   advanceCheckoutAvailable?: boolean;
+  trialEligible?: boolean;
+  trialEndsAt?: string | null;
+  trialExpired?: boolean;
+  paymentRequired?: boolean;
+  trialDays?: number;
 };
 
 type OpenRouterStatus = {
   hasUserKey: boolean;
   maskedKey: string | null;
-  fallbackFromPlatform: boolean;
 };
 
 function maskCustomerId(id: string | null | undefined): string | null {
@@ -109,12 +118,31 @@ export default function BillingPage() {
     },
   });
 
+  const portalMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/billing/portal-session", {});
+      const j = (await res.json()) as { url?: string };
+      if (!j.url) throw new Error("No portal URL returned");
+      return j.url;
+    },
+    onSuccess: (url) => {
+      window.location.href = url;
+    },
+    onError: (e: Error) => {
+      toast({ title: "Could not open billing portal", description: e.message, variant: "destructive" });
+    },
+  });
+
   const dbTier = subscription?.packageTier ?? user?.packageTier ?? "basic";
   const effectiveTier = user?.capabilities?.packageTier ?? dbTier;
   const isAdvance = effectiveTier === "advance";
   const aiReady = user?.capabilities?.aiGeneration === true;
   const canPay = config?.advanceCheckoutAvailable === true;
-  const showAdmin = canAccessAdminPanel(user?.role);
+  const showAdmin = canAccessAdminPanel(user?.role, (user as any)?.companyMembership?.role);
+  const companyRole = (user as any)?.companyMembership?.role as string | undefined;
+  const inCompanyWorkspace = Boolean((user as any)?.companyMembership);
+  const isCompanyBillingManager = companyRole === "owner";
+  const canManageBilling = user?.role === "super_admin" || !inCompanyWorkspace || isCompanyBillingManager;
   const stripeCustomerMasked = maskCustomerId(user?.stripeCustomerId ?? undefined);
 
   const postsLimitLabel =
@@ -122,19 +150,29 @@ export default function BillingPage() {
   const renewalTs = subscription?.current_period_end
     ? new Date(subscription.current_period_end * 1000)
     : null;
+  const trialEndsAt = subscription?.trialEndsAt ? new Date(subscription.trialEndsAt) : null;
+  const renewalLabel =
+    renewalTs && subscription?.status === "active" ? renewalTs.toLocaleDateString() : "No active paid subscription";
+  const trialDays = subscription?.trialDays ?? config?.trialDays ?? 7;
+  const stripeMissing = config?.stripe?.missingKeys ?? [];
+  const roleSummary = user?.role === "super_admin"
+    ? "Super admin"
+    : inCompanyWorkspace
+      ? `Company member (${companyRole || "member"})`
+      : "Individual workspace user";
 
   return (
     <AppLayout shellWidth="narrow" topBarTitle="Billing" topBarIcon={CreditCard}>
-      <div className="space-y-8 sm:space-y-10">
+      <div className={cn(appSectionStack, "sm:space-y-10")}>
         {/* Title */}
-        <div className="space-y-3 max-w-3xl">
+        <div className="max-w-3xl space-y-3.5">
           <div className="flex flex-wrap items-center gap-2.5">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary shrink-0">
               <CreditCard className="h-5 w-5" />
             </div>
-            <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 sm:text-3xl">Plan & billing</h1>
+            <h1 className={appPageTitle}>Plan & billing</h1>
           </div>
-          <p className="text-sm leading-relaxed text-zinc-600 sm:text-base">
+          <p className={appPageLead}>
             Your <strong className="font-medium text-zinc-900">workspace package</strong> controls AI (Advance) vs
             posting-only (Basic). Payments for Advance use Stripe; OpenRouter usage may be billed separately.
           </p>
@@ -144,12 +182,38 @@ export default function BillingPage() {
           <Alert className="rounded-xl border border-amber-200/80 bg-amber-50/90">
             <AlertTitle className="text-sm">Self-serve checkout unavailable</AlertTitle>
             <AlertDescription className="text-sm leading-relaxed mt-1.5">
-              The host must enable Stripe and set{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">STRIPE_SECRET_KEY</code>,{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">STRIPE_ADVANCE_PRICE_ID</code>, and{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">STRIPE_WEBHOOK_SECRET</code> pointing to{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">/api/webhooks/stripe</code>. Until then, ask an
-              admin to set your package to Advance.
+              Stripe checkout is currently disabled for this deployment.
+              {stripeMissing.length > 0 && (
+                <>
+                  {" "}Missing config:{" "}
+                  {stripeMissing.map((k) => (
+                    <code key={k} className="rounded bg-muted px-1 py-0.5 text-[11px] mr-1">{k}</code>
+                  ))}
+                  {config?.stripe?.webhookPath && (
+                    <>
+                      {" "}Webhook endpoint:{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-[11px]">{config.stripe.webhookPath}</code>
+                    </>
+                  )}
+                </>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
+        {subscription?.paymentRequired && (
+          <Alert className="rounded-xl border border-rose-200/80 bg-rose-50/90">
+            <AlertTitle className="text-sm">Trial ended — payment required</AlertTitle>
+            <AlertDescription className="text-sm leading-relaxed mt-1.5">
+              Your {trialDays}-day trial is finished. Upgrade with Stripe below to continue using Advance features.
+            </AlertDescription>
+          </Alert>
+        )}
+        {!canManageBilling && (
+          <Alert className="rounded-xl border border-blue-200/80 bg-blue-50/90">
+            <AlertTitle className="text-sm">Billing managed by your company owner</AlertTitle>
+            <AlertDescription className="text-sm leading-relaxed mt-1.5">
+              Your role is <strong>{companyRole || "member"}</strong>. Checkout, renewal, and cancellation are managed
+              by your company owner.
             </AlertDescription>
           </Alert>
         )}
@@ -208,6 +272,27 @@ export default function BillingPage() {
                         </p>
                       )}
                     </div>
+                    <Separator />
+                    <div className="space-y-2 text-sm">
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Billing cycle
+                      </p>
+                      <p className="text-muted-foreground">
+                        Renewal/expiry: <span className="font-medium text-foreground">{renewalLabel}</span>
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Billing owner: {roleSummary}
+                      </p>
+                    </div>
+                    {subscription?.trialEligible && trialEndsAt && (
+                      <>
+                        <Separator />
+                        <p className="text-xs text-muted-foreground">
+                          Trial ends on{" "}
+                          <span className="font-medium text-foreground">{trialEndsAt.toLocaleDateString()}</span>
+                        </p>
+                      </>
+                    )}
 
                     {stripeCustomerMasked && (
                       <>
@@ -253,7 +338,7 @@ export default function BillingPage() {
                   OpenRouter
                 </CardTitle>
                 <CardDescription className="text-xs sm:text-sm">
-                  Advance AI needs a key here or a platform key from the host.
+                  Advance AI requires your own OpenRouter key.
                 </CardDescription>
               </CardHeader>
               <CardContent className="px-5 sm:px-6 pb-5 sm:pb-6">
@@ -267,8 +352,6 @@ export default function BillingPage() {
                     <span className="text-muted-foreground">Saved key:</span>{" "}
                     <code className="text-xs rounded bg-muted px-1.5 py-0.5 break-all">{openRouter.maskedKey}</code>
                   </p>
-                ) : openRouter?.fallbackFromPlatform ? (
-                  <p className="text-sm text-muted-foreground">Using the host&apos;s shared platform key.</p>
                 ) : (
                   <p className="text-sm text-amber-800 dark:text-amber-200/90">No key configured yet.</p>
                 )}
@@ -284,7 +367,7 @@ export default function BillingPage() {
 
           {/* Upgrade / Advance — right column */}
           <div className="lg:col-span-7 space-y-6">
-            <Card className={cn(appCardElevated, "overflow-hidden border-primary/20")}>
+            <Card className={cn(appCardElevated, "overflow-hidden border-primary/20 shadow-[0_14px_30px_-20px_rgba(0,0,0,0.35)]")}>
               <CardHeader className="space-y-2 border-b border-zinc-200/80 bg-gradient-to-br from-primary/[0.07] via-white to-white px-5 pb-6 pt-6 sm:px-6 sm:pt-8">
                 <div className="flex items-start gap-3">
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary border border-primary/20">
@@ -305,7 +388,7 @@ export default function BillingPage() {
                 <ul className="space-y-3 text-sm text-muted-foreground">
                   {[
                     "AI-assisted drafts in Create Post",
-                    "Telegram /ai with your or the platform OpenRouter key",
+                    "Telegram /ai with your own OpenRouter key",
                     "Everything in Basic (scheduling, multi-network posting, bot)",
                   ].map((line) => (
                     <li key={line} className="flex gap-3">
@@ -336,9 +419,29 @@ export default function BillingPage() {
                   <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-sm text-muted-foreground">
                     <p className="font-medium text-emerald-900 dark:text-emerald-100 mb-1">You&apos;re on Advance</p>
                     <p>
-                      To change or cancel a subscription, use the link in your Stripe receipt or contact your workspace
-                      administrator.
+                      You can manage invoices, payment methods, and cancellation from the Stripe billing portal.
                     </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-3"
+                      onClick={() => portalMutation.mutate()}
+                      disabled={!canPay || portalMutation.isPending || !canManageBilling}
+                    >
+                      {portalMutation.isPending ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Opening portal…
+                        </>
+                      ) : (
+                        "Manage subscription"
+                      )}
+                    </Button>
+                    {!canManageBilling && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Ask your company owner to manage renewal or cancellation.
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
@@ -346,7 +449,7 @@ export default function BillingPage() {
                       size="lg"
                       className="w-full sm:w-auto min-w-[200px] shrink-0"
                       onClick={() => checkoutMutation.mutate()}
-                      disabled={!canPay || checkoutMutation.isPending}
+                      disabled={!canPay || checkoutMutation.isPending || !canManageBilling}
                     >
                       {checkoutMutation.isPending ? (
                         <>
@@ -364,6 +467,11 @@ export default function BillingPage() {
                       You&apos;ll complete payment on Stripe&apos;s site. Your plan updates when checkout finishes (and
                       via webhook).
                     </p>
+                    {!canManageBilling && (
+                      <p className="text-xs text-muted-foreground leading-relaxed flex-1 min-w-0">
+                        Billing actions are restricted for your company role.
+                      </p>
+                    )}
                   </div>
                 )}
               </CardContent>
@@ -420,8 +528,8 @@ export default function BillingPage() {
         </div>
 
         <p className="text-center sm:text-left text-[11px] sm:text-xs text-muted-foreground max-w-3xl px-0">
-          Questions about invoices or refunds are handled by your workspace owner and Stripe — this app stores your
-          package tier and optional Stripe customer id for renewals.
+          Trial policy: {trialDays} days. Questions about invoices or refunds are handled by your workspace owner and
+          Stripe — this app stores your package tier and optional Stripe customer id for renewals.
         </p>
       </div>
     </AppLayout>

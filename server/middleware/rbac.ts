@@ -15,7 +15,7 @@ export function requirePermission(permission: Permission) {
     }
 
     const user = req.user!;
-    const role = (user.role as UserRole) || "user";
+    const role = (user.role as UserRole) || "client";
     const customPermissions = (user.permissions as string[]) || [];
 
     if (!hasPermission(role, permission, customPermissions)) {
@@ -38,7 +38,7 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   }
 
   const user = req.user!;
-  const role = (user.role as UserRole) || "user";
+  const role = (user.role as UserRole) || "client";
 
   if (!canAccessAdmin(role)) {
     return res.status(403).json({ 
@@ -60,7 +60,7 @@ export function requireAnyPermission(...permissions: Permission[]) {
     }
 
     const user = req.user!;
-    const role = (user.role as UserRole) || "user";
+    const role = (user.role as UserRole) || "client";
     const customPermissions = (user.permissions as string[]) || [];
 
     const hasAnyPermission = permissions.some(permission => 

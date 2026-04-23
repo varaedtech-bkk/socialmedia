@@ -27,13 +27,28 @@ export default function RequestAccessPage() {
   const [packageTier, setPackageTier] = useState<"basic" | "advance">("basic");
   const [honeypot, setHoneypot] = useState("");
 
+  const getOrCreateDeviceId = (): string => {
+    const key = "request_access_device_id";
+    const existing = window.localStorage.getItem(key);
+    if (existing && existing.length >= 16) return existing;
+    const generated =
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`) + "-trial";
+    window.localStorage.setItem(key, generated);
+    return generated;
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setPending(true);
     try {
       const res = await fetch("/api/access-request", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-device-id": getOrCreateDeviceId(),
+        },
         body: JSON.stringify({
           email,
           fullName,
@@ -50,7 +65,7 @@ export default function RequestAccessPage() {
       toast({
         title: "Request received",
         description:
-          "If email notifications are configured, a super admin has been notified. You will hear back soon.",
+          "Your request is queued for admin approval. Trial starts after your account is created.",
       });
       setEmail("");
       setFullName("");
@@ -83,7 +98,7 @@ export default function RequestAccessPage() {
             <CardTitle className="text-xl font-semibold text-zinc-900">Request platform access</CardTitle>
             <CardDescription className="text-zinc-600">
               Tell us how to reach you and which plan you need. A super admin will review your request
-              (often after payment is confirmed) and create your login.
+              and create your login with a 7-day trial.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -123,10 +138,8 @@ export default function RequestAccessPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="basic">Basic — dashboard & bot posting (no AI)</SelectItem>
-                    <SelectItem value="advance">
-                      Advance — AI drafts + Telegram / bot AI (OpenRouter key required)
-                    </SelectItem>
+                    <SelectItem value="basic">Basic - core posting and scheduling</SelectItem>
+                    <SelectItem value="advance">Advance - posting plus AI tools</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

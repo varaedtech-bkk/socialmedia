@@ -9,6 +9,7 @@ import {
   validateMediaFilesForPlatforms,
 } from "@shared/platform-limits";
 import { useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { apiRequest, getErrorMessageFromResponse, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -56,9 +57,19 @@ export default function PostEditor({ onSuccess }: PostEditorProps) {
   const [aiPrompt, setAiPrompt] = useState("");
   const { user } = useAuth();
   const { toast } = useToast();
-  const canUseAi = user?.capabilities?.aiGeneration === true;
+  const { data: openRouterStatus } = useQuery<{ hasUserKey: boolean }>({
+    queryKey: ["/api/integrations/openrouter"],
+    queryFn: async () => {
+      const res = await fetch("/api/integrations/openrouter", { credentials: "include" });
+      if (!res.ok) return { hasUserKey: false };
+      return res.json();
+    },
+    enabled: Boolean(user?.id),
+    staleTime: 30_000,
+  });
+  const canUseAi = user?.capabilities?.aiGeneration === true && openRouterStatus?.hasUserKey === true;
   const isAdvanceNoKey =
-    user?.capabilities?.packageTier === "advance" && !user?.capabilities?.aiGeneration;
+    user?.capabilities?.packageTier === "advance" && openRouterStatus?.hasUserKey !== true;
 
   const form = useForm<InsertPost>({
     resolver: zodResolver(insertPostSchema),

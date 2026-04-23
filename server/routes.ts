@@ -4,10 +4,12 @@ import { createServer, type Server } from "http";
 import { setupAuth } from "./auth";
 import { storage } from "./storage";
 import { z } from "zod";
+import { sql } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
 import bodyParser from 'body-parser';
 import fsp from "fs/promises"; // fs/promises for other operations
+import { createHash } from "crypto";
 
 import axios from "axios";
 import express from "express";
@@ -15,7 +17,7 @@ import express from "express";
 import { initializeScheduledPosts, schedulePost } from "./schedulePost";
 import { publishPost } from "./publishPost";
 import { removePublishedPostFromPlatforms } from "./remotePostDelete";
-import { insertPostSchema } from "@shared/schema";
+import { insertPostSchema, platformEnum } from "@shared/schema";
 import {
   MAX_POST_CONTENT_CHARS,
   validateInsertPostPlatformRules,
@@ -29,21 +31,28 @@ import {
 } from "./feature-config";
 import { getN8nIntegrationStatus, triggerN8nWorkflow } from "./n8n";
 import { registerTelegramRoutes } from "./routes-telegram";
-import { verifyTelegramBindToken } from "./telegram-link";
+import { verifyTelegramBindToken, verifyWhatsAppBindToken } from "./telegram-link";
+import { db } from "./db";
 import {
-  getOpenRouterApiKey,
   maskOpenRouterApiKeyHint,
   normalizeOpenRouterApiKey,
   openRouterRequestHeaders,
   resolveOpenRouterApiKeyForUser,
 } from "./openrouter-headers";
-import { userHasAdvanceAiEntitlement } from "./user-capabilities";
 import {
   advanceStripeConfigured,
+  getAdvanceBillingConfigStatus,
   createAdvanceCheckoutSession,
+  createAdvanceBillingPortalSession,
   verifyAdvanceCheckoutSession,
 } from "./stripe-advance";
 import { notifySuperAdmin } from "./notify-super-admin";
+import {
+  computeTrialEndDate,
+  getTrialDays,
+  isTrialEligibleForUser,
+  isTrialExpiredForUser,
+} from "./trial-policy";
 
 /** Log errors with context for debugging; captures message, stack, and axios response when present */
 function logError(context: string, error: unknown, extra?: Record<string, unknown>): void {
@@ -62,6 +71,10 @@ function logError(context: string, error: unknown, extra?: Record<string, unknow
   console.error("[ERROR]", JSON.stringify(payload, null, 2));
 }
 
+async function resolveCompanyContextForUser(userId: number) {
+  return storage.getUserCompanyContext(userId);
+}
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: "./uploads",
@@ -77,6 +90,40 @@ const upload = multer({
 
 export async function registerRoutes(app: Express): Promise<Server> {
   setupAuth(app);
+
+  const livenessHandler = (_req: express.Request, res: express.Response) => {
+    res.status(200).json({
+      status: "healthy",
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      version: process.env.npm_package_version || "unknown",
+    });
+  };
+
+  const readinessHandler = async (_req: express.Request, res: express.Response) => {
+    try {
+      await db.execute(sql`SELECT 1`);
+      res.status(200).json({
+        status: "ready",
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      logError("Readiness check failed", error);
+      res.status(503).json({
+        status: "unhealthy",
+        timestamp: new Date().toISOString(),
+        error: "Database connection failed",
+      });
+    }
+  };
+
+  // Keep both /health and /api/health so ops can probe either path.
+  app.get("/health", livenessHandler);
+  app.get("/api/health", livenessHandler);
+
+  // Readiness endpoint verifies DB connectivity for probes/load balancers.
+  app.get("/health/ready", readinessHandler);
+  app.get("/api/health/ready", readinessHandler);
   registerTelegramRoutes(app);
   // Reinitialize scheduled posts on server startup
   await initializeScheduledPosts();
@@ -107,6 +154,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/access-request", accessRequestLimiter, async (req, res) => {
     try {
+      if (!isFeatureEnabled(FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED)) {
+        return res.status(403).json({ error: "Access onboarding payments are currently disabled." });
+      }
+
       const raw = req.body as Record<string, unknown>;
       if (typeof raw.website === "string" && raw.website.length > 0) {
         return res.status(400).json({ error: "Invalid request" });
@@ -123,11 +174,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .strip()
         .parse(req.body);
 
+      const rawDeviceId =
+        typeof req.headers["x-device-id"] === "string" ? req.headers["x-device-id"] : "";
+      const deviceHash =
+        rawDeviceId.trim().length >= 16
+          ? createHash("sha256").update(rawDeviceId.trim()).digest("hex")
+          : null;
+
       const row = await storage.createAccessRequest({
         email: body.email,
         fullName: body.fullName,
         company: body.company,
         message: body.message,
+        deviceHash,
         packageTierRequested: body.packageTier,
       });
 
@@ -140,7 +199,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           `Plan requested: ${row.packageTierRequested}`,
           `Message: ${row.message || "—"}`,
           `Request ID: ${row.id}`,
-          `Approve in Admin → Access requests.`,
+          `Device hash: ${deviceHash ? `${deviceHash.slice(0, 8)}…` : "none"}`,
+          `Approval flow: create account with 7-day trial; upgrade/payment happens in billing.`,
         ].join("\n")
       );
 
@@ -156,6 +216,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/auth/:platform", async (req, res) => {
     const { platform } = req.params;
+    if (req.isAuthenticated()) {
+      const companyCtx = await resolveCompanyContextForUser(req.user!.id);
+      const allowedPlatforms = Array.isArray(companyCtx?.membership?.allowedPlatforms)
+        ? companyCtx!.membership.allowedPlatforms
+        : [];
+      if (allowedPlatforms.length > 0 && !allowedPlatforms.includes(platform)) {
+        return res.status(403).json({
+          error: `Platform '${platform}' is disabled for your member account by a company admin.`,
+        });
+      }
+    }
 
     try {
       const state = JSON.stringify({
@@ -781,6 +852,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           verifiedName: phoneNumbersResponse.data.data[0].verified_name,
         }
       );
+      const companyCtx = await storage.getUserCompanyContext(req.user!.id).catch(() => null);
+      const whatsappIdentityRaw = String(phoneNumbersResponse.data.data[0].display_phone_number || "").trim();
+      if (companyCtx && whatsappIdentityRaw) {
+        await storage.upsertAgentChannelUserLink({
+          companyId: companyCtx.company.id,
+          userId: req.user!.id,
+          channel: "whatsapp",
+          channelUserId: whatsappIdentityRaw,
+          isActive: true,
+        });
+      }
 
       res.redirect(`/?whatsapp_connected=true`);
     } catch (error) {
@@ -868,9 +950,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/billing/config", (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
+    const stripeCfg = getAdvanceBillingConfigStatus();
     res.json({
       advanceCheckoutAvailable:
-        isFeatureEnabled(FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED) && advanceStripeConfigured(),
+        isFeatureEnabled(FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED) && stripeCfg.checkoutAvailable,
+      stripe: {
+        missingKeys: stripeCfg.missingKeys,
+        webhookPath: stripeCfg.webhookPath,
+      },
+      trialDays: getTrialDays(),
     });
   });
 
@@ -880,6 +968,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/billing/session-status", (req, res) => {
     void verifyAdvanceCheckoutSession(req, res);
+  });
+
+  app.post("/api/billing/portal-session", (req, res) => {
+    void createAdvanceBillingPortalSession(req, res);
   });
 
   app.get("/api/integrations/n8n/status", (req, res) => {
@@ -926,19 +1018,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     try {
-      if (!userHasAdvanceAiEntitlement(dbUser)) {
+      const companyCtx = await resolveCompanyContextForUser(dbUser.id);
+      const companyTier = companyCtx?.company?.packageTier === "advance" ? "advance" : "basic";
+      const aiEnabledByAdmin = companyCtx?.membership?.aiEnabled ?? true;
+      const userTrialExpired = isTrialExpiredForUser(dbUser);
+
+      if (dbUser.role !== "super_admin" && companyTier !== "advance") {
         return res.status(403).json({
           error:
-            "AI drafts are included only on the Advance plan. Your account is on Basic (dashboard and bot posting without AI). Ask a super admin to set your package to Advance.",
+            "AI drafts are included only on the Advance company plan. Ask your company admin to upgrade the workspace package.",
+        });
+      }
+      if (userTrialExpired) {
+        return res.status(402).json({
+          error:
+            "Your 7-day trial ended. Please open Billing and complete Stripe checkout to keep using Advance AI features.",
+        });
+      }
+      if (!aiEnabledByAdmin) {
+        return res.status(403).json({
+          error: "AI access is disabled for your member account by a company admin.",
         });
       }
 
       const { prompt, platforms, tone } = schema.parse(req.body);
-      const apiKey = resolveOpenRouterApiKeyForUser(dbUser);
+      const apiKey = resolveOpenRouterApiKeyForUser(
+        dbUser,
+        companyCtx?.company?.openrouterApiKey ?? null,
+      );
       if (!apiKey) {
         return res.status(400).json({
           error:
-            "Advance AI needs an OpenRouter API key. Add yours under Integrations, or set OPENROUTER_API_KEY on the server for a shared key.",
+            "Advance AI needs your own OpenRouter API key. Add it under Integrations.",
         });
       }
 
@@ -979,7 +1090,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (response.status === 401 || msgLower.includes("user not found")) {
           const hint = dbUser.openrouterApiKey
             ? "Your Integrations OpenRouter key was rejected (invalid, expired, or restricted). Replace it at https://openrouter.ai/keys."
-            : "OpenRouter rejected the platform key. Set OPENROUTER_API_KEY on the server or add your own key under Integrations. Set CLIENT_URL or BASE_URL for the HTTP-Referer header.";
+            : "Add your OpenRouter key under Integrations to use AI features.";
           return res.status(400).json({ error: hint });
         }
         throw new Error(rawMsg);
@@ -1002,11 +1113,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const raw = user.openrouterApiKey;
     const normalized = raw ? normalizeOpenRouterApiKey(raw) : "";
     const hasUserKey = Boolean(normalized);
-    const platformFallback = Boolean(getOpenRouterApiKey());
     return res.json({
       hasUserKey,
       maskedKey: hasUserKey && raw ? maskOpenRouterApiKeyHint(raw) : null,
-      fallbackFromPlatform: !hasUserKey && platformFallback,
+      fallbackFromCompany: false,
+      fallbackFromPlatform: false,
+      requiresUserKey: true,
     });
   });
 
@@ -1054,9 +1166,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Invalid or expired Telegram link" });
       }
       await storage.setUserTelegramChatId(req.user!.id, verified.telegramChatId);
+      const companyCtx = await storage.getUserCompanyContext(req.user!.id);
+      if (companyCtx) {
+        await storage.upsertAgentChannelUserLink({
+          companyId: companyCtx.company.id,
+          userId: req.user!.id,
+          channel: "telegram",
+          channelUserId: verified.telegramChatId,
+          isActive: true,
+        });
+      }
       return res.json({ ok: true, telegramChatId: verified.telegramChatId });
     } catch (error) {
       logError("Telegram attach", error, { userId: req.user?.id });
+      return res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post("/api/whatsapp/attach", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    try {
+      const body = z.object({ token: z.string().min(8) }).parse(req.body);
+      const verified = verifyWhatsAppBindToken(body.token);
+      if (!verified) {
+        return res.status(400).json({ error: "Invalid or expired WhatsApp link" });
+      }
+      const companyCtx = await storage.getUserCompanyContext(req.user!.id);
+      if (companyCtx) {
+        await storage.upsertAgentChannelUserLink({
+          companyId: companyCtx.company.id,
+          userId: req.user!.id,
+          channel: "whatsapp",
+          channelUserId: verified.whatsAppUserId,
+          isActive: true,
+        });
+      }
+      return res.json({ ok: true, whatsAppUserId: verified.whatsAppUserId });
+    } catch (error) {
+      logError("WhatsApp attach", error, { userId: req.user?.id });
       return res.status(400).json({ error: (error as Error).message });
     }
   });
@@ -1128,7 +1275,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
   
       // Parse and validate platforms
       const parsedPlatforms = JSON.parse(platforms);
-      const validatedPlatforms = insertPostSchema.shape.platforms.parse(parsedPlatforms);
+      const validatedPlatforms = z.array(platformEnum).parse(parsedPlatforms);
+      const companyCtx = await resolveCompanyContextForUser(user.id);
+      const allowedPlatforms = Array.isArray(companyCtx?.membership?.allowedPlatforms)
+        ? companyCtx!.membership.allowedPlatforms
+        : [];
+      if (allowedPlatforms.length > 0) {
+        const disallowed = validatedPlatforms.filter((p: string) => !allowedPlatforms.includes(p));
+        if (disallowed.length > 0) {
+          return res.status(403).json({
+            error: `Your company admin restricted these platforms for your account: ${disallowed.join(", ")}`,
+          });
+        }
+      }
   console.log(validatedPlatforms,'validate')
       const mediaUrls = files.map((file) => `/uploads/${file.filename}`);
       
@@ -1299,10 +1458,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get('/api/subscription', async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
+    const dbUser = await storage.getUser(req.user!.id);
+    const companyCtx = await resolveCompanyContextForUser(req.user!.id);
+    const effectivePackageTier =
+      companyCtx?.company?.packageTier === "advance" ? "advance" : "basic";
+    const trialEligible = Boolean(dbUser && isTrialEligibleForUser(dbUser));
+    const trialEndDate = trialEligible && dbUser ? computeTrialEndDate(dbUser.createdAt) : null;
+    const trialExpired = Boolean(dbUser && isTrialExpiredForUser(dbUser));
     
     // If subscriptions are disabled, return unlimited/default values
     if (!isFeatureEnabled(FEATURE_KEYS.SUBSCRIPTIONS_ENABLED)) {
-      const u = await storage.getUser(req.user!.id);
       return res.json({
         plan: 'free',
         status: 'active',
@@ -1310,7 +1475,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         posts_used: 0,
         posts_limit: Infinity, // Unlimited when feature is disabled
         featureDisabled: true,
-        packageTier: u?.packageTier ?? "basic",
+        packageTier: effectivePackageTier,
+        trialEligible,
+        trialEndsAt: trialEndDate ? trialEndDate.toISOString() : null,
+        trialExpired,
+        paymentRequired: trialExpired,
+        trialDays: getTrialDays(),
         advanceCheckoutAvailable:
           isFeatureEnabled(FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED) && advanceStripeConfigured(),
       });
@@ -1318,14 +1488,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     
     try {
       const subscription = await storage.getUserSubscription(req.user!.id);
-      const u = await storage.getUser(req.user!.id);
+      const normalizedPeriodEnd =
+        subscription?.periodEnd && subscription.periodEnd > 1_000_000_000_000
+          ? Math.floor(subscription.periodEnd / 1000)
+          : subscription?.periodEnd || 0;
       res.json({
         plan: subscription?.plan || 'free',
         status: subscription?.status || 'inactive',
-        current_period_end: subscription?.periodEnd || 0,
+        current_period_end: normalizedPeriodEnd,
         posts_used: subscription?.postsUsed || 0,
         posts_limit: subscription?.postsLimit || 5, // Default free tier limit
-        packageTier: u?.packageTier ?? "basic",
+        packageTier: effectivePackageTier,
+        trialEligible,
+        trialEndsAt: trialEndDate ? trialEndDate.toISOString() : null,
+        trialExpired,
+        paymentRequired: trialExpired,
+        trialDays: getTrialDays(),
         advanceCheckoutAvailable:
           isFeatureEnabled(FEATURE_KEYS.STRIPE_PAYMENTS_ENABLED) && advanceStripeConfigured(),
       });
